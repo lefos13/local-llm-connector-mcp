@@ -1,0 +1,64 @@
+# Claude Project Instructions
+
+This repository is the `local-tester-mcp` server for the local test verdict workflow. Follow `AGENTS.md` as the source of truth for project rules. This file gives Claude-specific operating guidance while preserving the same requirements.
+
+## Before Changing Files
+
+- Read `AGENTS.md` first, then this file.
+- Check whether a more local `AGENTS.md`, `agents.md`, `CLAUDE.md`, or `claude.md` exists before editing files in subdirectories.
+- Inspect the current git status and avoid overwriting changes you did not make.
+- Treat `README.md` and `skill/skill-example.md` as part of the public contract. Any server behavior, setup requirement, or tool contract change must be reflected there.
+
+## Project Purpose
+
+The server exposes MCP tools that help agents validate code changes without flooding chat context with raw logs. It runs local commands in a workspace, stores raw logs under that workspace, sends trimmed logs or file contents to a local OpenAI-compatible LLM endpoint, and returns compact JSON summaries.
+
+Current tools:
+
+- `run_test_verdict`
+- `run_failure_triage`
+- `run_changed_files_review`
+- `run_regression_check`
+
+## Implementation Expectations
+
+- Keep tool names, input schemas, and output fields stable unless the user asks for a contract migration.
+- Update tool registration and handler logic together.
+- Keep command exit codes authoritative. A non-zero command result must not become a passing verdict because the LLM guessed incorrectly.
+- Prefer explicit, typed payloads and narrow helper functions over broad abstractions.
+- Keep path handling rooted in the provided `workspacePath` wherever tool inputs are workspace-relative.
+- Do not introduce remote LLM calls by default. The intended dependency is the local endpoint configured by `LOCAL_LLM_API_URL` and `LOCAL_LLM_MODEL`.
+- Do not paste raw logs into the final response when the server’s summary is enough.
+
+## Documentation Sync
+
+Update `README.md` and `skill/skill-example.md` whenever you change any of the following:
+
+- Tool list, names, descriptions, or trigger guidance.
+- Input schemas, required fields, or path-resolution behavior.
+- Output JSON shape, verdict meanings, or failure fields.
+- Command detection order or supported project types.
+- Log directory, baseline behavior, timeout behavior, or fallback behavior.
+- Environment variables, setup requirements, or local LLM assumptions.
+
+If a change only edits contributor instructions, confirm it does not contradict `README.md` or `skill/skill-example.md`.
+
+## Validation
+
+- Run `npm run build` after TypeScript changes.
+- Use the narrowest meaningful validation for behavior changes.
+- If dependency installation is required, request network privileges before running `npm install`.
+- For documentation-only updates, review the changed markdown for internal consistency; a build is not required.
+
+## Comment Style
+
+When adding or changing a large block of code, place a short `/* ... */` comment at the top of that block if the logic needs explanation. Keep it minimal and focused on what the logic does. Do not write a stack of `//` comments for a multi-line explanation.
+
+## Response Style
+
+When reporting completed work, include:
+
+- A concise summary of edits.
+- A clear explanation of why the edits were needed.
+- Verification performed.
+- Any unresolved risk or follow-up needed.
