@@ -9,6 +9,7 @@ This repository contains the `local-tester-mcp` server used by the `local-test-v
 - Run `npm run build` after TypeScript changes.
 - Do not run `npm install` in the sandbox. Any dependency installation must be requested with network privileges.
 - If you change server behavior, tool names, input schemas, output shapes, environment variables, validation logic, command detection, log paths, setup requirements, or guardrails, update `README.md` and `skill/skill-example.md` in the same change.
+- Run `npm run build:plugin` after TypeScript or skill documentation changes to regenerate the files in the `plugin/` directory. Do not modify files under `plugin/` manually as they are generated.
 - Do not modify generated test-run logs or baseline files unless the task explicitly requires it.
 
 ## Repository Shape
@@ -69,12 +70,12 @@ For TypeScript or behavior changes:
 
 1. Run `npm run build`.
 2. If a tool behavior changed, exercise the relevant path with the narrowest practical local command or fixture.
-3. Confirm `README.md` and `skill/skill-example.md` describe the new behavior.
+3. Run `npm run build:plugin` and confirm `README.md`, `skill/skill-example.md`, and the generated plugin files under `plugin/` describe the new behavior.
 
 For documentation-only changes:
 
-1. Check that the instructions do not contradict `README.md` or `skill/skill-example.md`.
-2. No build is required unless code changed.
+1. Run `npm run build:plugin` if skill documentation was edited, and check that the instructions do not contradict `README.md`, `skill/skill-example.md`, or the generated plugin files.
+2. No server build is required unless source TS code changed.
 
 ## Reporting Back
 

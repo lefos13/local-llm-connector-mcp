@@ -1,3 +1,5 @@
 node_modules/
 dist/
 .codex-local-test-runs/
+plugin/
+

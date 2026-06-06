@@ -241,6 +241,42 @@ grep_log
 
 Restart or reload the MCP client after changing the server path, environment variables, or enabled tool list.
 
+## Plugin Installation for Antigravity
+
+To use the `local-tester` plugin and the `local-test-verdict` skill in Antigravity:
+
+1. Generate the plugin directory contents by running the following command from the repository root:
+   ```bash
+   npm run build:plugin
+   ```
+   This will programmatically generate the `plugin/` directory (containing `plugin.json` and the `skills` files) which is ignored by git.
+
+2. Locate the `.gemini/config/plugins` directory in your home directory:
+   - **macOS/Linux**: `~/.gemini/config/plugins/`
+   - **Windows**: `%USERPROFILE%\.gemini\config\plugins\`
+
+3. Copy the generated `plugin` folder contents into a folder named `local-tester` under that directory:
+   ```bash
+   # Create the target directory if it doesn't exist
+   mkdir -p ~/.gemini/config/plugins/local-tester
+
+   # Copy the generated plugin metadata and skills
+   cp -r plugin/* ~/.gemini/config/plugins/local-tester/
+   ```
+
+   The final directory structure on your system should look like:
+   ```text
+   ~/.gemini/config/plugins/local-tester/
+   ├── plugin.json
+   └── skills/
+       └── local-test-verdict/
+           └── SKILL.md
+   ```
+
+4. Configure the `local_tester` MCP server in your `~/.gemini/antigravity/mcp_config.json` file as described in [MCP Client Setup](#mcp-client-setup).
+
+5. Restart your Antigravity client to load the new plugin and its skills.
+
 ## Typical Agent Workflow
 
 1. Identify the target workspace as an absolute path.
