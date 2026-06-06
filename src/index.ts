@@ -5,10 +5,11 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { detectCommands } from './detector';
-import { runSuite, trimLog, numberLines, getGitDiff, estimateTokens } from './runner';
-import { queryLocalLLM, queryCodeReview, queryCommandDigest, queryLogQuestion } from './llm';
+import { runSuite, trimLog, numberLines, getGitDiff } from './runner';
+import { queryLocalLLM, queryCodeReview, queryCommandDigest, queryLogQuestion, getLLMUsage } from './llm';
 import { resolveLogPath, grepLog } from './registry';
 import { RunTestVerdictArgs, RunCommandDigestArgs } from './types';
+import { buildAnalyticsRecord, inferWorkspaceFromLogPath, recordAnalytics } from './analytics';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -23,6 +24,38 @@ const server = new Server(
     },
   }
 );
+
+function jsonText(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
+
+/* Tool handlers build the exact MCP response text first, then persist separate analytics from that text and the local source material. */
+function recordToolAnalytics(workspacePath: string, input: {
+  toolName: string;
+  rawSourceText: string;
+  llmInputText?: string;
+  responseText: string;
+  llmResult?: unknown;
+  runId?: string;
+  rawLogPath?: string;
+  logPath?: string;
+  commands?: string[];
+  exitCodes?: Record<string, number>;
+}): void {
+  recordAnalytics(workspacePath, buildAnalyticsRecord({
+    toolName: input.toolName,
+    rawSourceText: input.rawSourceText,
+    llmInputText: input.llmInputText,
+    responseText: input.responseText,
+    llmUsage: getLLMUsage(input.llmResult),
+    targetWorkspacePath: workspacePath,
+    runId: input.runId,
+    rawLogPath: input.rawLogPath,
+    logPath: input.logPath,
+    commands: input.commands,
+    exitCodes: input.exitCodes
+  }));
+}
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
@@ -229,18 +262,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       if (commandsToRun.length === 0) {
+        const output = {
+          verdict: 'uncertain',
+          confidence: 0.5,
+          commandsRun: [],
+          summary: 'No tests or build tools detected in workspace directory.',
+          failures: [],
+          rawLogPath: ''
+        };
+        const text = jsonText(output);
+        recordToolAnalytics(workspacePath, {
+          toolName: 'run_test_verdict',
+          rawSourceText: '',
+          responseText: text,
+          commands: []
+        });
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                verdict: 'uncertain',
-                confidence: 0.5,
-                commandsRun: [],
-                summary: 'No tests or build tools detected in workspace directory.',
-                failures: [],
-                rawLogPath: ''
-              }, null, 2)
+              text
             }
           ]
         };
@@ -277,10 +318,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         finalVerdict = 'pass'; // Override if everything exited with 0
       }
 
-      /* Estimate how much context this compact verdict saved versus pasting the full log, so the agent can judge the trade-off. */
-      const compactPayload = triage.summary + JSON.stringify(triage.failures);
-      const estimatedTokensSaved = Math.max(0, estimateTokens(suiteResult.rawLogContent) - estimateTokens(compactPayload));
-
+      const runId = path.basename(suiteResult.rawLogPath).replace(/\.log$/, '');
       const output = {
         verdict: finalVerdict,
         confidence: triage.confidence,
@@ -289,15 +327,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         failures: triage.failures,
         rawLogPath: suiteResult.rawLogPath,
         needsRawLogs: triage.needsRawLogs,
-        likelyRelevantToRecentChanges: triage.likelyRelevantToRecentChanges,
-        estimatedTokensSaved
+        likelyRelevantToRecentChanges: triage.likelyRelevantToRecentChanges
       };
+      const text = jsonText(output);
+      recordToolAnalytics(workspacePath, {
+        toolName: 'run_test_verdict',
+        rawSourceText: suiteResult.rawLogContent,
+        llmInputText: suiteResult.trimmedLogContent,
+        responseText: text,
+        llmResult: triage,
+        runId,
+        rawLogPath: suiteResult.rawLogPath,
+        commands: commandsToRun,
+        exitCodes
+      });
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(output, null, 2)
+            text
           }
         ]
       };
@@ -342,18 +391,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         [],
         trimmed
       );
+      const workspaceForAnalytics = inferWorkspaceFromLogPath(resolvedPath);
+      const output = {
+        verdict: triage.verdict,
+        confidence: triage.confidence,
+        summary: triage.summary,
+        failures: triage.failures,
+        needsRawLogs: triage.needsRawLogs
+      };
+      const text = jsonText(output);
+      recordToolAnalytics(workspaceForAnalytics, {
+        toolName: 'run_failure_triage',
+        rawSourceText: logContent,
+        llmInputText: trimmed,
+        responseText: text,
+        llmResult: triage,
+        logPath: path.relative(workspaceForAnalytics, resolvedPath)
+      });
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              verdict: triage.verdict,
-              confidence: triage.confidence,
-              summary: triage.summary,
-              failures: triage.failures,
-              needsRawLogs: triage.needsRawLogs
-            }, null, 2)
+            text
           }
         ]
       };
@@ -404,27 +464,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       if (filesToReview.length === 0) {
+        const output = {
+          hasIssues: false,
+          issues: [],
+          summary: 'No changed files could be read for review.',
+          skipped
+        };
+        const text = jsonText(output);
+        recordToolAnalytics(workspacePath, {
+          toolName: 'run_changed_files_review',
+          rawSourceText: '',
+          responseText: text
+        });
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                hasIssues: false,
-                issues: [],
-                summary: 'No changed files could be read for review.',
-                skipped
-              }, null, 2)
+              text
             }
           ]
         };
       }
 
       const review = await queryCodeReview(filesToReview);
+      const rawSourceText = filesToReview.map((f) => f.content).join('\n');
+      const output = { ...review, skipped };
+      const text = jsonText(output);
+      recordToolAnalytics(workspacePath, {
+        toolName: 'run_changed_files_review',
+        rawSourceText,
+        llmInputText: rawSourceText,
+        responseText: text,
+        llmResult: review
+      });
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({ ...review, skipped }, null, 2)
+            text
           }
         ]
       };
@@ -446,14 +523,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const commandsToRun = await detectCommands(workspacePath);
       if (commandsToRun.length === 0) {
+        const output = {
+          status: 'uncertain',
+          message: 'No test commands detected.'
+        };
+        const text = jsonText(output);
+        recordToolAnalytics(workspacePath, {
+          toolName: 'run_regression_check',
+          rawSourceText: '',
+          responseText: text,
+          commands: []
+        });
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                status: 'uncertain',
-                message: 'No test commands detected.'
-              }, null, 2)
+              text
             }
           ]
         };
@@ -491,17 +576,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // Save current run as baseline for future checks
       fs.writeFileSync(baselinePath, JSON.stringify(currentRunData, null, 2), 'utf8');
+      const runId = path.basename(suiteResult.rawLogPath).replace(/\.log$/, '');
+      const output = {
+        isRegression,
+        comparison,
+        currentRun: currentRunData,
+        rawLogPath: suiteResult.rawLogPath
+      };
+      const text = jsonText(output);
+      recordToolAnalytics(workspacePath, {
+        toolName: 'run_regression_check',
+        rawSourceText: suiteResult.rawLogContent,
+        responseText: text,
+        runId,
+        rawLogPath: suiteResult.rawLogPath,
+        commands: commandsToRun,
+        exitCodes
+      });
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              isRegression,
-              comparison,
-              currentRun: currentRunData,
-              rawLogPath: suiteResult.rawLogPath
-            }, null, 2)
+            text
           }
         ]
       };
@@ -550,10 +647,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       const runId = path.basename(suiteResult.rawLogPath).replace(/\.log$/, '');
 
-      /* Estimate context saved versus pasting the full command output. */
-      const compactPayload = digest.summary + digest.keyFindings.join('\n') + digest.digest;
-      const estimatedTokensSaved = Math.max(0, estimateTokens(suiteResult.rawLogContent) - estimateTokens(compactPayload));
-
       const output = {
         exitCode: effectiveExitCode,
         exitCodes,
@@ -562,12 +655,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         digest: digest.digest,
         runId,
         rawLogPath: suiteResult.rawLogPath,
-        needsRawLogs: digest.needsRawLogs,
-        estimatedTokensSaved
+        needsRawLogs: digest.needsRawLogs
       };
+      const text = jsonText(output);
+      recordToolAnalytics(workspacePath, {
+        toolName: 'run_command_digest',
+        rawSourceText: suiteResult.rawLogContent,
+        llmInputText: suiteResult.trimmedLogContent,
+        responseText: text,
+        llmResult: digest,
+        runId,
+        rawLogPath: suiteResult.rawLogPath,
+        commands: commandsToRun,
+        exitCodes
+      });
 
       return {
-        content: [{ type: 'text', text: JSON.stringify(output, null, 2) }]
+        content: [{ type: 'text', text }]
       };
     } catch (err: any) {
       return {
@@ -607,9 +711,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const bounded = trimLog(numbered, startBudget, budget - startBudget);
 
       const res = await queryLogQuestion(question, bounded);
+      const output = { ...res, rawLogPath: path.relative(workspacePath, absLog) };
+      const text = jsonText(output);
+      recordToolAnalytics(workspacePath, {
+        toolName: 'query_log',
+        rawSourceText: fs.readFileSync(absLog, 'utf8'),
+        llmInputText: bounded,
+        responseText: text,
+        llmResult: res,
+        runId,
+        rawLogPath: path.relative(workspacePath, absLog)
+      });
 
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ...res, rawLogPath: path.relative(workspacePath, absLog) }, null, 2) }]
+        content: [{ type: 'text', text }]
       };
     } catch (err: any) {
       return {
@@ -643,10 +758,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      const logContent = fs.readFileSync(absLog, 'utf8');
       const result = grepLog(absLog, pattern, context, maxMatches);
+      const output = { ...result, rawLogPath: path.relative(workspacePath, absLog) };
+      const text = jsonText(output);
+      recordToolAnalytics(workspacePath, {
+        toolName: 'grep_log',
+        rawSourceText: logContent,
+        responseText: text,
+        runId,
+        rawLogPath: path.relative(workspacePath, absLog)
+      });
 
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ...result, rawLogPath: path.relative(workspacePath, absLog) }, null, 2) }]
+        content: [{ type: 'text', text }]
       };
     } catch (err: any) {
       return {

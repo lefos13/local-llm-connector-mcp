@@ -1,5 +1,43 @@
 import { FailureDetail } from './types';
 
+/* Token usage is attached to parsed local-LLM results as non-enumerable metadata so handlers can persist analytics without leaking those fields into MCP JSON responses. */
+export interface LLMUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  source: 'api' | 'estimated';
+}
+
+interface ChatCompletionResult {
+  content: string;
+  usage?: LLMUsage;
+}
+
+const LLM_USAGE = Symbol('llmUsage');
+
+export function getLLMUsage(value: unknown): LLMUsage | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  return (value as any)[LLM_USAGE] as LLMUsage | undefined;
+}
+
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+function attachLLMUsage<T extends object>(value: T, usage: LLMUsage | undefined): T {
+  if (!usage) {
+    return value;
+  }
+  Object.defineProperty(value, LLM_USAGE, {
+    value: usage,
+    enumerable: false,
+    configurable: false
+  });
+  return value;
+}
+
 export interface LLMVerdictResponse {
   verdict: 'pass' | 'fail' | 'uncertain';
   confidence: number;
@@ -30,8 +68,34 @@ function extractJSON(text: string): string {
   return text;
 }
 
-/* Shared transport for every local-LLM call: builds the OpenAI-compatible request and returns the raw message content, or throws so each caller can apply its own conservative fallback. */
-async function callChatCompletion(systemPrompt: string, userPrompt: string): Promise<string> {
+function normalizeUsage(data: any, systemPrompt: string, userPrompt: string, rawContent: string): LLMUsage {
+  const usage = data?.usage;
+  if (
+    usage &&
+    typeof usage.prompt_tokens === 'number' &&
+    typeof usage.completion_tokens === 'number' &&
+    typeof usage.total_tokens === 'number'
+  ) {
+    return {
+      promptTokens: usage.prompt_tokens,
+      completionTokens: usage.completion_tokens,
+      totalTokens: usage.total_tokens,
+      source: 'api'
+    };
+  }
+
+  const promptTokens = estimateTokens(`${systemPrompt}\n${userPrompt}`);
+  const completionTokens = estimateTokens(rawContent);
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+    source: 'estimated'
+  };
+}
+
+/* Shared transport for every local-LLM call: builds the OpenAI-compatible request and returns raw message content plus private token accounting, or throws so each caller can apply its own conservative fallback. */
+async function callChatCompletion(systemPrompt: string, userPrompt: string): Promise<ChatCompletionResult> {
   const apiUrl = process.env.LOCAL_LLM_API_URL || 'http://localhost:8080/v1';
   const modelName = process.env.LOCAL_LLM_MODEL || 'local-model';
 
@@ -60,7 +124,10 @@ async function callChatCompletion(systemPrompt: string, userPrompt: string): Pro
   if (!rawContent) {
     throw new Error('Empty response from local LLM');
   }
-  return rawContent;
+  return {
+    content: rawContent,
+    usage: normalizeUsage(data, systemPrompt, userPrompt, rawContent)
+  };
 }
 
 export async function queryLocalLLM(
@@ -104,8 +171,8 @@ Logs:
 ${trimmedLogs}`;
 
   try {
-    const rawContent = await callChatCompletion(systemPrompt, userPrompt);
-    const jsonString = extractJSON(rawContent);
+    const completion = await callChatCompletion(systemPrompt, userPrompt);
+    const jsonString = extractJSON(completion.content);
     const result = JSON.parse(jsonString) as LLMVerdictResponse;
 
     // Validate verdict values
@@ -113,7 +180,7 @@ ${trimmedLogs}`;
       result.verdict = 'uncertain';
     }
 
-    return result;
+    return attachLLMUsage(result, completion.usage);
   } catch (error: any) {
     // If the local model is offline, fails to respond, or output is unparseable
     return {
@@ -174,14 +241,14 @@ Schema:
   }
 
   try {
-    const rawContent = await callChatCompletion(systemPrompt, userPrompt);
-    const jsonString = extractJSON(rawContent);
+    const completion = await callChatCompletion(systemPrompt, userPrompt);
+    const jsonString = extractJSON(completion.content);
     const parsed = JSON.parse(jsonString) as CodeReviewResponse;
     if (typeof parsed.summary !== 'string') {
       parsed.summary = '';
     }
     parsed.reviewAvailable = true;
-    return parsed;
+    return attachLLMUsage(parsed, completion.usage);
   } catch (error: any) {
     /* The local LLM is offline or returned unparseable output. Stay conservative: report no issues rather than a phantom warning, and flag that the review did not actually run. */
     return {
@@ -231,8 +298,8 @@ Output:
 ${trimmedLogs}`;
 
   try {
-    const rawContent = await callChatCompletion(systemPrompt, userPrompt);
-    const parsed = JSON.parse(extractJSON(rawContent)) as CommandDigestResponse;
+    const completion = await callChatCompletion(systemPrompt, userPrompt);
+    const parsed = JSON.parse(extractJSON(completion.content)) as CommandDigestResponse;
     if (typeof parsed.summary !== 'string') {
       parsed.summary = '';
     }
@@ -245,7 +312,7 @@ ${trimmedLogs}`;
     if (typeof parsed.needsRawLogs !== 'boolean') {
       parsed.needsRawLogs = false;
     }
-    return parsed;
+    return attachLLMUsage(parsed, completion.usage);
   } catch (error: any) {
     /* Local model offline or unparseable output: stay conservative and tell the caller to fall back to the raw log rather than inventing a digest. */
     return {
@@ -286,8 +353,8 @@ Log (line-numbered):
 ${numberedLog}`;
 
   try {
-    const rawContent = await callChatCompletion(systemPrompt, userPrompt);
-    const parsed = JSON.parse(extractJSON(rawContent)) as LogQueryResponse;
+    const completion = await callChatCompletion(systemPrompt, userPrompt);
+    const parsed = JSON.parse(extractJSON(completion.content)) as LogQueryResponse;
     if (typeof parsed.answer !== 'string') {
       parsed.answer = '';
     }
@@ -298,7 +365,7 @@ ${numberedLog}`;
       parsed.lineRange = '';
     }
     parsed.available = true;
-    return parsed;
+    return attachLLMUsage(parsed, completion.usage);
   } catch (error: any) {
     /* Model offline or unparseable: signal unavailability so the caller can fall back to grep_log or a raw-log slice. */
     return {

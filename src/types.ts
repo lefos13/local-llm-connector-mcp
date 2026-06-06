@@ -13,7 +13,6 @@ export interface VerdictResult {
   rawLogPath: string;
   needsRawLogs?: boolean;
   likelyRelevantToRecentChanges?: boolean;
-  estimatedTokensSaved?: number;
 }
 
 export interface RunTestVerdictArgs {

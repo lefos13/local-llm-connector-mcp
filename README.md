@@ -16,6 +16,7 @@ It is designed for coding agents that need to verify changes without pasting raw
 - Can compare current auto-detected validation behavior with a saved baseline.
 - Digests the output of any arbitrary noisy command (installs, builds, migrations, large searches, git history) into a compact, intent-focused summary.
 - Keeps every run addressable by a `runId` so stored logs can be queried (`query_log`) or searched (`grep_log`) later without re-reading the whole file.
+- Stores private context-savings analytics under `.codex-local-test-runs/` so users can inspect local LLM token use, returned MCP response size, and estimated main-context savings without sending those analytics back to the main model.
 
 ## Exposed MCP Tools
 
@@ -43,7 +44,6 @@ Returns a JSON verdict with:
 - `rawLogPath`: path to the full log, relative to `workspacePath`.
 - `needsRawLogs`: whether the local model needs more log context.
 - `likelyRelevantToRecentChanges`: local model's estimate of whether a failure is connected to the reported `changedFiles`. Omitted when the model is unavailable.
-- `estimatedTokensSaved`: rough estimate (~4 chars/token) of how much context this compact verdict saved versus pasting the full log.
 
 ### `run_failure_triage`
 
@@ -99,7 +99,6 @@ Returns:
 - `runId`: stable handle for the stored log (the log filename without extension).
 - `rawLogPath`: path to the full log, relative to `workspacePath`.
 - `needsRawLogs`: whether the trimmed log lacked detail needed to satisfy the intent.
-- `estimatedTokensSaved`: rough estimate of context saved versus pasting the full output.
 
 The digest only describes output. It never decides success or failure; the exit code remains authoritative.
 
@@ -134,6 +133,33 @@ Returns `matches` (each with `lineRange` and a line-numbered `excerpt`), `totalM
 ## Run Registry
 
 Every run executed by the server is appended to `.codex-local-test-runs/index.json`, recording `runId`, `commands`, `exitCodes`, `timestamp`, `rawLogPath`, and `lineCount`. The `runId` is the log filename without its extension. `query_log` and `grep_log` use this index to resolve a `runId` back to its log, so an agent can interrogate any prior run without re-running it or reading the whole file. The index keeps the most recent 200 runs and is written best-effort: a failed index write never fails the underlying run. It is independent of the `run_regression_check` baseline.
+
+## Context Analytics
+
+Every successful tool path records private analytics under the MCP server project:
+
+```text
+<local-tester-mcp>/.codex-local-test-runs/analytics.json
+<local-tester-mcp>/.codex-local-test-runs/analytics-summary.json
+```
+
+These files are for later user inspection and are not returned in MCP tool responses. Records keep the latest 200 tool calls and include compact metadata only: tool name, timestamp, target workspace path, `runId` or relative log path when available, commands and exit codes when applicable, token counts, estimated main-context tokens saved, savings percentage, and whether token usage came from the local LLM API or estimator fallback.
+
+The server uses OpenAI-compatible `usage.prompt_tokens`, `usage.completion_tokens`, and `usage.total_tokens` when the local endpoint provides them. If usage is missing, it falls back to the same rough `~4 chars/token` estimator used for raw-log and MCP-response sizing. Analytics writes are best-effort and never fail the underlying tool call. Raw logs, prompts, file contents, and full model responses are not stored in analytics records.
+
+To view the analytics in a browser, run:
+
+```sh
+npm run analytics:ui
+```
+
+By default, the dashboard reads analytics from the MCP server project and serves `http://127.0.0.1:8787`. To use a different port:
+
+```sh
+npm run analytics:ui -- --port 8787
+```
+
+The command runs the compiled server from `dist/analytics-ui.js`. For debugging or migration, `--store /absolute/path` can point the UI at another analytics store, but normal MCP tool calls always write analytics to the MCP project.
 
 ## Requirements
 
