@@ -159,7 +159,7 @@ By default, the dashboard reads analytics from the MCP server project and serves
 npm run analytics:ui -- --port 8787
 ```
 
-The command runs the compiled server from `dist/analytics-ui.js`. For debugging or migration, `--store /absolute/path` can point the UI at another analytics store, but normal MCP tool calls always write analytics to the MCP project.
+The command runs the compiled server from `dist/analytics-ui.js`. The dashboard separates MCP tool-call count from shell-command count and lists every command in an event with its exit code, so a single `run_test_verdict` or `run_command_digest` call can show multiple underlying commands. For debugging or migration, `--store /absolute/path` can point the UI at another analytics store, but normal MCP tool calls always write analytics to the MCP project.
 
 ## Requirements
 

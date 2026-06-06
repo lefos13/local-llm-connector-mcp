@@ -261,50 +261,132 @@ function renderHtml(): string {
     .tool-row span:first-child {
       overflow-wrap: anywhere;
     }
-    .table-wrap {
-      overflow-x: auto;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 920px;
-    }
-    th, td {
-      border-bottom: 1px solid var(--border);
-      padding: 10px 12px;
-      text-align: left;
-      vertical-align: top;
-    }
-    th {
-      background: var(--surface-2);
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-    }
-    tr:last-child td { border-bottom: 0; }
     code {
       font-family: "SFMono-Regular", Consolas, monospace;
       font-size: 12px;
       overflow-wrap: anywhere;
     }
+    /* The event feed renders each run as a self-contained card so long paths, multi-line commands, and token counts each get their own region instead of being squeezed into narrow table columns. */
+    .events {
+      display: grid;
+      gap: 12px;
+    }
+    .event {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .event-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin-bottom: 12px;
+    }
+    .event-tool {
+      font-size: 15px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .event-time {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .event-head .spacer { flex: 1; }
+    .event-savings {
+      color: var(--accent);
+      font-size: 15px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
     .source {
       display: inline-block;
       border-radius: 999px;
       background: var(--surface-2);
-      padding: 2px 8px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
       white-space: nowrap;
     }
-    .pct {
-      color: var(--accent);
-      font-weight: 700;
+    .event-field {
+      display: grid;
+      gap: 4px;
+      margin-bottom: 12px;
     }
+    .field-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .field-value {
+      overflow-wrap: anywhere;
+    }
+    .field-value code { font-size: 12px; }
+    .commands {
+      display: grid;
+      gap: 6px;
+    }
+    .command {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 9px;
+      background: var(--surface-2);
+    }
+    .exit {
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 11px;
+      padding: 1px 7px;
+      white-space: nowrap;
+    }
+    .exit.fail {
+      background: #fff1f0;
+      border-color: #f3c7c1;
+      color: var(--danger);
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+    }
+    .metric {
+      display: grid;
+      gap: 2px;
+    }
+    .metric .m-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .metric .m-value {
+      font-size: 16px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .metric.saved .m-value { color: var(--accent); }
     .empty {
       padding: 26px;
       color: var(--muted);
       text-align: center;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
     }
     @media (max-width: 900px) {
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -313,6 +395,7 @@ function renderHtml(): string {
     @media (max-width: 560px) {
       .topbar { align-items: flex-start; flex-direction: column; }
       .grid, .tool-list { grid-template-columns: 1fr; }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .wrap { width: min(100% - 20px, 1180px); }
     }
   </style>
@@ -330,7 +413,8 @@ function renderHtml(): string {
   <main class="wrap">
     <div class="notice" id="notice"></div>
     <section class="grid" aria-label="Analytics summary">
-      <div class="card"><div class="label">Total calls</div><div class="value" id="totalCalls">0</div></div>
+      <div class="card"><div class="label">MCP tool calls</div><div class="value" id="totalCalls">0</div></div>
+      <div class="card"><div class="label">Shell commands</div><div class="value" id="commandCount">0</div></div>
       <div class="card"><div class="label">Raw source tokens</div><div class="value" id="rawTokens">0</div></div>
       <div class="card"><div class="label">Local LLM tokens</div><div class="value" id="llmTokens">0</div></div>
       <div class="card"><div class="label">Returned main-model tokens</div><div class="value" id="returnedTokens">0</div></div>
@@ -345,25 +429,7 @@ function renderHtml(): string {
     </section>
     <section class="section">
       <h2>Recent Events</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Tool</th>
-              <th>Target Workspace</th>
-              <th>Run / Log</th>
-              <th>Source</th>
-              <th>Raw</th>
-              <th>LLM</th>
-              <th>Returned</th>
-              <th>Saved</th>
-              <th>Savings</th>
-            </tr>
-          </thead>
-          <tbody id="events"></tbody>
-        </table>
-      </div>
+      <div class="events" id="events"></div>
     </section>
   </main>
   <script>
@@ -371,6 +437,7 @@ function renderHtml(): string {
       store: document.getElementById('store'),
       notice: document.getElementById('notice'),
       totalCalls: document.getElementById('totalCalls'),
+      commandCount: document.getElementById('commandCount'),
       rawTokens: document.getElementById('rawTokens'),
       llmTokens: document.getElementById('llmTokens'),
       returnedTokens: document.getElementById('returnedTokens'),
@@ -412,52 +479,118 @@ function renderHtml(): string {
       }
     }
 
+    function countCommands(records) {
+      return (records || []).reduce((sum, record) => {
+        return sum + (Array.isArray(record.commands) ? record.commands.length : 0);
+      }, 0);
+    }
+
+    function buildField(label, valueNode) {
+      const field = document.createElement('div');
+      field.className = 'event-field';
+      const lbl = document.createElement('div');
+      lbl.className = 'field-label';
+      lbl.textContent = label;
+      const val = document.createElement('div');
+      val.className = 'field-value';
+      val.appendChild(valueNode);
+      field.append(lbl, val);
+      return field;
+    }
+
+    function buildCommands(record) {
+      const commands = Array.isArray(record.commands) ? record.commands : [];
+      const list = document.createElement('div');
+      list.className = 'commands';
+      for (const command of commands) {
+        const row = document.createElement('div');
+        row.className = 'command';
+        const code = document.createElement('code');
+        code.textContent = command;
+        const exit = document.createElement('span');
+        const exitCode = record.exitCodes && Object.prototype.hasOwnProperty.call(record.exitCodes, command)
+          ? record.exitCodes[command]
+          : undefined;
+        exit.className = 'exit' + (typeof exitCode === 'number' && exitCode !== 0 ? ' fail' : '');
+        exit.textContent = typeof exitCode === 'number' ? 'exit ' + exitCode : 'exit ?';
+        row.append(code, exit);
+        list.appendChild(row);
+      }
+      return list;
+    }
+
+    function buildMetric(label, value, extraClass) {
+      const metric = document.createElement('div');
+      metric.className = 'metric' + (extraClass ? ' ' + extraClass : '');
+      const mLabel = document.createElement('div');
+      mLabel.className = 'm-label';
+      mLabel.textContent = label;
+      const mValue = document.createElement('div');
+      mValue.className = 'm-value';
+      mValue.textContent = value;
+      metric.append(mLabel, mValue);
+      return metric;
+    }
+
+    /* Each analytics record is rendered as a card: a header line (tool, time, source, savings), full-width path/run fields that can wrap freely, the command list, and a tabular metrics strip for the token counts. */
     function renderEvents(records) {
       ids.events.textContent = '';
       if (!records || records.length === 0) {
-        const tr = document.createElement('tr');
-        const td = document.createElement('td');
-        td.colSpan = 10;
-        td.className = 'empty';
-        td.textContent = 'No analytics records found.';
-        tr.appendChild(td);
-        ids.events.appendChild(tr);
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = 'No analytics records found.';
+        ids.events.appendChild(empty);
         return;
       }
       for (const record of records) {
-        const tr = document.createElement('tr');
-        const cells = [
-          new Date(record.timestamp).toLocaleString(),
-          record.toolName,
-          record.targetWorkspacePath || '-',
-          record.runId || record.rawLogPath || record.logPath || '-',
-          record.measurementSource,
-          num(record.rawSourceTokens),
-          num(record.localLlmTotalTokens),
-          num(record.returnedToMainTokens),
-          num(record.estimatedTokensSaved),
-          percent(record.savingsPercentage)
-        ];
-        cells.forEach((value, index) => {
-          const td = document.createElement('td');
-          if (index === 2 || index === 3) {
-            const code = document.createElement('code');
-            code.textContent = value;
-            td.appendChild(code);
-          } else if (index === 4) {
-            const span = document.createElement('span');
-            span.className = 'source';
-            span.textContent = value;
-            td.appendChild(span);
-          } else if (index === 9) {
-            td.className = 'pct';
-            td.textContent = value;
-          } else {
-            td.textContent = value;
-          }
-          tr.appendChild(td);
-        });
-        ids.events.appendChild(tr);
+        const card = document.createElement('div');
+        card.className = 'event';
+
+        const head = document.createElement('div');
+        head.className = 'event-head';
+        const tool = document.createElement('span');
+        tool.className = 'event-tool';
+        tool.textContent = record.toolName;
+        const time = document.createElement('span');
+        time.className = 'event-time';
+        time.textContent = new Date(record.timestamp).toLocaleString();
+        const source = document.createElement('span');
+        source.className = 'source';
+        source.textContent = record.measurementSource;
+        const spacer = document.createElement('span');
+        spacer.className = 'spacer';
+        const savings = document.createElement('span');
+        savings.className = 'event-savings';
+        savings.textContent = percent(record.savingsPercentage) + ' saved';
+        head.append(tool, time, source, spacer, savings);
+        card.appendChild(head);
+
+        if (record.targetWorkspacePath) {
+          const code = document.createElement('code');
+          code.textContent = record.targetWorkspacePath;
+          card.appendChild(buildField('Target workspace', code));
+        }
+
+        if (Array.isArray(record.commands) && record.commands.length > 0) {
+          card.appendChild(buildField('Commands', buildCommands(record)));
+        }
+
+        const runRef = record.runId || record.rawLogPath || record.logPath;
+        if (runRef) {
+          const code = document.createElement('code');
+          code.textContent = runRef;
+          card.appendChild(buildField('Run / log', code));
+        }
+
+        const metrics = document.createElement('div');
+        metrics.className = 'metrics';
+        metrics.appendChild(buildMetric('Raw tokens', num(record.rawSourceTokens)));
+        metrics.appendChild(buildMetric('Local LLM', num(record.localLlmTotalTokens)));
+        metrics.appendChild(buildMetric('Returned', num(record.returnedToMainTokens)));
+        metrics.appendChild(buildMetric('Saved', num(record.estimatedTokensSaved), 'saved'));
+        card.appendChild(metrics);
+
+        ids.events.appendChild(card);
       }
     }
 
@@ -465,19 +598,21 @@ function renderHtml(): string {
       const res = await fetch('/api/analytics', { cache: 'no-store' });
       const payload = await res.json();
       const summary = payload.summary || {};
+      const records = payload.records || [];
       setText(ids.store, payload.storePath || '-');
       setText(ids.totalCalls, num(summary.totalCalls));
+      setText(ids.commandCount, num(countCommands(records)));
       setText(ids.rawTokens, num(summary.totalRawSourceTokens));
       setText(ids.llmTokens, num(summary.totalLocalLlmTokens));
       setText(ids.returnedTokens, num(summary.totalReturnedToMainTokens));
       setText(ids.savedTokens, num(summary.totalEstimatedMainContextTokensSaved));
       setText(ids.avgSavings, percent(summary.averageSavingsPercentage));
-      setText(ids.recordCount, num((payload.records || []).length));
+      setText(ids.recordCount, num(records.length));
       setText(ids.updatedAt, summary.updatedAt ? new Date(summary.updatedAt).toLocaleString() : '-');
       ids.notice.style.display = payload.available ? 'none' : 'block';
       ids.notice.textContent = payload.error || '';
       renderTools(summary.callsByTool);
-      renderEvents(payload.records);
+      renderEvents(records);
     }
 
     document.getElementById('refresh').addEventListener('click', load);
