@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "local_tester": {
+      "command": "/Users/eevangelinos/.nvm/versions/node/v22.21.1/bin/node",
+      "args": [
+        "/Users/eevangelinos/.gemini/antigravity/scratch/local-tester-mcp/dist/index.js"
+      ],
+      "env": {
+        "LOCAL_LLM_API_URL": "http://localhost:8080/v1",
+        "LOCAL_LLM_MODEL": "local-model"
+      }
+    }
+  }
+}

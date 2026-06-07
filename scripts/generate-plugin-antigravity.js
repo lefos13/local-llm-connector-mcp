@@ -1,11 +1,19 @@
 const fs = require('fs');
 const path = require('path');
 
+/* Antigravity plugin flow.
+   Generates the plugin layout expected by the Antigravity client:
+     plugin/antigravity/plugin.json                       (manifest at root)
+     plugin/antigravity/skills/local-test-verdict/SKILL.md
+   This is the original, minimal flow. For the Claude Code plugin (which also
+   ships an MCP server registration and a local marketplace) see
+   generate-plugin-claude.js. */
+
 const rootDir = path.resolve(__dirname, '..');
-const pluginDir = path.join(rootDir, 'plugin');
+const pluginDir = path.join(rootDir, 'plugin', 'antigravity');
 const skillsDir = path.join(pluginDir, 'skills', 'local-test-verdict');
 
-console.log('Generating plugin structure...');
+console.log('Generating Antigravity plugin structure...');
 
 try {
   // 1. Create directories
@@ -39,12 +47,12 @@ try {
 
   if (fs.existsSync(sourceSkill)) {
     fs.copyFileSync(sourceSkill, destSkill);
-    console.log('Plugin generated successfully under plugin/');
+    console.log('Antigravity plugin generated successfully under plugin/antigravity/');
   } else {
     console.error(`Error: Source skill file not found at ${sourceSkill}`);
     process.exit(1);
   }
 } catch (error) {
-  console.error('Failed to generate plugin:', error);
+  console.error('Failed to generate Antigravity plugin:', error);
   process.exit(1);
 }

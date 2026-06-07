@@ -5,7 +5,9 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "build:plugin": "node scripts/generate-plugin.js",
+    "build:plugin": "npm run build:plugin:antigravity && npm run build:plugin:claude",
+    "build:plugin:antigravity": "node scripts/generate-plugin-antigravity.js",
+    "build:plugin:claude": "node scripts/generate-plugin-claude.js",
     "start": "node dist/index.js",
     "dev": "tsc -w",
     "analytics:ui": "npm run build && node dist/analytics-ui.js"

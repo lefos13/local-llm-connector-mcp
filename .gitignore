@@ -1,5 +1,7 @@
 node_modules/
 dist/
 .codex-local-test-runs/
-plugin/
+# Antigravity plugin output is generated; not tracked.
+plugin/antigravity/
+# Claude Code plugin is committed so the marketplace install (git-based) can copy it.
 

@@ -1,0 +1,16 @@
+{
+  "name": "local-tester",
+  "version": "1.0.0",
+  "description": "Local test execution, verification, and local-LLM triage. Runs validation commands in a workspace, keeps raw logs out of context, and returns compact verdicts via the local_tester MCP server.",
+  "author": {
+    "name": "Lefos13"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "local-test",
+    "mcp",
+    "verdict",
+    "triage",
+    "validation"
+  ]
+}
