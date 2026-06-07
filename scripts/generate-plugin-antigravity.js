@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 
 /* Antigravity plugin flow.
    Generates a complete, installable, portable Antigravity plugin under
@@ -78,7 +79,7 @@ try {
      install (Antigravity does not document version-gated update pulls the way
      Claude Code's marketplace install does, but keeping this accurate still
      matters for users diffing or re-staging the plugin folder). */
-  const VERSION = "1.1.0";
+  const VERSION = "1.1.1";
 
   const sdkVersion = require(
     path.join(
@@ -119,7 +120,7 @@ try {
     mcpServers: {
       local_tester: {
         command: "bash",
-        args: ["./server/start.sh"],
+        args: [path.join(os.homedir(), ".gemini", "config", "plugins", PLUGIN_NAME, "server", "start.sh")],
         env: {
           LOCAL_LLM_API_URL: "http://localhost:8080/v1",
           LOCAL_LLM_MODEL: "local-model",
@@ -171,8 +172,8 @@ try {
   const startSh = `#!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)"
-DATA="$ROOT/.data"
+ROOT="\${ANTIGRAVITY_PLUGIN_ROOT:-$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)}"
+DATA="\${ANTIGRAVITY_PLUGIN_DATA:-$ROOT/.data}"
 mkdir -p "$DATA"
 
 # (Re)install runtime deps only when the manifest changes. Output goes to
