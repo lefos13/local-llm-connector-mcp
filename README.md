@@ -334,7 +334,7 @@ This repository can generate the `local-tester` plugin for **three different cli
 
 | Client      | npm script                     | Output             | Tracked in git | Packaging                                                                 |
 | ----------- | ------------------------------ | ------------------ | -------------- | ------------------------------------------------------------------------ |
-| Antigravity | `npm run build:plugin:antigravity` | `plugin/antigravity/` | No (gitignored) | Root `plugin.json` + `skills/`. MCP server configured separately by you. |
+| Antigravity | `npm run build:plugin:antigravity` | `plugin/antigravity/` | No (gitignored) | Self-contained: `plugin.json`, `mcp_config.json` (registers the bundled server), portable `server/`, `skills/`. |
 | Claude Code | `npm run build:plugin:claude`      | `plugin/claude/`      | Yes            | `.claude-plugin/` manifest, bundled portable MCP server, local marketplace. |
 | Codex       | `npm run build:plugin:codex`       | `plugin/codex/`       | Yes            | `.codex-plugin/` manifest, bundled portable MCP server, repo marketplace. |
 
@@ -344,26 +344,40 @@ Run all generators at once with `npm run build:plugin`.
 
 ### Antigravity
 
-1. Generate the Antigravity plugin from the repository root:
+The Antigravity plugin is now self-contained and portable, like the Claude Code
+and Codex variants: it bundles the compiled `local_tester` MCP server under
+`plugin/antigravity/server/` and registers it itself via `mcp_config.json`, so
+you do **not** need to hand-edit a separate global MCP config to get the tools.
+Antigravity's plugin spec does not document a `${CLAUDE_PLUGIN_ROOT}`/`${PLUGIN_ROOT}`-style
+path variable for `mcp_config.json`, so the bundled launcher (`server/start.sh`)
+self-locates instead (`$(dirname "${BASH_SOURCE[0]}")`) and installs its single
+runtime dependency into a persistent `.data/` directory beside itself on first
+run — no absolute machine-specific paths are baked in.
+
+1. Build the server and generate the plugin:
 
    ```bash
+   npm run build
    npm run build:plugin:antigravity
    ```
 
-   This generates `plugin/antigravity/` (containing `plugin.json` and the `skills` files), which is ignored by git.
+   This generates `plugin/antigravity/` (`plugin.json`, `mcp_config.json`, the
+   bundled `server/`, and `skills/local-llm-subagent/`), which is ignored by
+   git — Antigravity loads plugins from a local folder rather than a
+   git-based marketplace, so nothing needs to be committed for this flow.
 
-2. Locate the `.gemini/config/plugins` directory in your home directory:
-   - **macOS/Linux**: `~/.gemini/config/plugins/`
-   - **Windows**: `%USERPROFILE%\.gemini\config\plugins\`
+2. Locate the directory where your Antigravity client looks for plugins, e.g.:
+   - **Global** (macOS/Linux): `~/.gemini/config/plugins/`
+   - **Global** (Windows): `%USERPROFILE%\.gemini\config\plugins\`
+   - Some Antigravity CLI versions instead stage imported plugins under `~/.gemini/antigravity-cli/plugins/`.
+   - **Workspace-only**: `<workspace-root>/.agents/plugins/` (or `_agents/plugins/`).
 
-3. Copy the generated contents into a folder named `local-tester` under that directory:
+3. Copy (or symlink, so future regenerations need no re-copy) the generated
+   plugin into a folder named `local-tester` under that directory:
 
    ```bash
-   # Create the target directory if it doesn't exist
-   mkdir -p ~/.gemini/config/plugins/local-tester
-
-   # Copy the generated plugin metadata and skills
-   cp -r plugin/antigravity/* ~/.gemini/config/plugins/local-tester/
+   mkdir -p ~/.gemini/config/plugins
+   cp -R plugin/antigravity ~/.gemini/config/plugins/local-tester
    ```
 
    The final directory structure on your system should look like:
@@ -371,14 +385,31 @@ Run all generators at once with `npm run build:plugin`.
    ```text
    ~/.gemini/config/plugins/local-tester/
    ├── plugin.json
+   ├── mcp_config.json
+   ├── server/
+   │   ├── start.sh
+   │   ├── package.json
+   │   └── *.js (compiled server)
    └── skills/
-       └── local-test-verdict/
+       └── local-llm-subagent/
            └── SKILL.md
    ```
 
-4. Configure the `local_tester` MCP server in your `~/.gemini/antigravity/mcp_config.json` file as described in [MCP Client Setup](#mcp-client-setup).
+4. Restart your Antigravity client (or reload plugins, if your version exposes
+   that action) so it discovers `plugin.json`, stages `mcp_config.json`
+   (registering the `local_tester` server — exposed as `mcp__local_tester__*`),
+   and loads the `local-llm-subagent` skill.
 
-5. Restart your Antigravity client to load the new plugin and its skills.
+**Requirements on the target machine:** `node`, `npm`, and `bash` on `PATH`,
+plus network access the first time (to install the runtime dependency). After
+that the server runs offline. To point at a different local LLM endpoint or
+model, edit the `env` block in the copied `mcp_config.json` (`LOCAL_LLM_API_URL`,
+`LOCAL_LLM_MODEL`, and the per-task `LOCAL_LLM_*_MODEL` overrides described in
+[MCP Client Setup](#mcp-client-setup)).
+
+Re-running `npm run build:plugin:antigravity` regenerates `plugin/antigravity/`
+in place; re-copy (or re-symlink once) it into the plugins directory to pick up
+changes, then reload/restart Antigravity.
 
 ### Claude Code
 
