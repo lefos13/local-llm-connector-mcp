@@ -4,5 +4,6 @@ dist/
 # Antigravity plugin output is generated; not tracked.
 plugin/antigravity/
 # Claude Code plugin is committed so the marketplace install (git-based) can copy it.
+# Codex plugin is committed so the repo marketplace install can copy it.
 
 .DS_Store

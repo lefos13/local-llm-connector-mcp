@@ -1,0 +1,20 @@
+{
+  "name": "local-tester-marketplace",
+  "interface": {
+    "displayName": "Local Tester Marketplace"
+  },
+  "plugins": [
+    {
+      "name": "local-tester",
+      "source": {
+        "source": "local",
+        "path": "./plugin/codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

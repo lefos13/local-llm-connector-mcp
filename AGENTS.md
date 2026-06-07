@@ -14,10 +14,11 @@ This repository contains the `local-tester-mcp` server used by the `local-test-v
 
 ## Plugin Generators
 
-Two generators package the same `local-test-verdict` skill for different clients. `npm run build:plugin` runs both; each also has a dedicated script.
+Three generators package the same `local-test-verdict` skill for different clients. `npm run build:plugin` runs all of them; each also has a dedicated script.
 
 - `scripts/generate-plugin-antigravity.js` (`npm run build:plugin:antigravity`) → `plugin/antigravity/`. Original minimal layout: root `plugin.json` + `skills/`. This output is gitignored.
 - `scripts/generate-plugin-claude.js` (`npm run build:plugin:claude`) → `plugin/claude/` plus a repo-root `.claude-plugin/marketplace.json`. Claude Code layout: `plugin/claude/.claude-plugin/plugin.json`, `plugin/claude/.mcp.json`, a bundled compiled server under `plugin/claude/server/`, and the skill under `plugin/claude/skills/local-llm-subagent/`. The marketplace catalog is written at the **repo root** (not inside the plugin) so `claude plugin marketplace add <repo>` finds it; it lists the plugin via the relative source `./plugin/claude`. Both the repo-root catalog and `plugin/claude/` are committed (un-ignored in `.gitignore`) so the git-based marketplace install can copy them.
+- `scripts/generate-plugin-codex.js` (`npm run build:plugin:codex`) → `plugin/codex/` plus a repo-root `.agents/plugins/marketplace.json`. Codex layout: `plugin/codex/.codex-plugin/plugin.json`, `plugin/codex/.mcp.json`, a bundled compiled server under `plugin/codex/server/`, and the skill under `plugin/codex/skills/local-llm-subagent/`. The marketplace catalog is written at the **repo root** so Codex can discover it as a repo marketplace; it lists the plugin via the relative source `./plugin/codex`. Both the repo-root catalog and `plugin/codex/` are committed so marketplace installs can copy them.
 
 Notes for the Claude Code generator:
 
@@ -26,6 +27,13 @@ Notes for the Claude Code generator:
 - `node_modules` is not committed. The committed `plugin/claude/server/` carries only the compiled JS plus a minimal `package.json`.
 - Because `plugin/claude/` is committed, regenerate and commit it whenever server behavior or the skill changes.
 - **Bump `VERSION` in `scripts/generate-plugin-claude.js` for every change that touches `plugin/claude/` output — including changes that only edit `skill/skill-example.md`.** Claude Code only pulls plugin updates when the manifest `version` changes (otherwise it relies on the git commit SHA the plugin was first installed from); a static version silently pins installed copies to stale content and the user's "Update" action becomes a no-op. Treat even a wording-only change to the skill as "meaningful" for this purpose, since it changes what gets shipped in `plugin/claude/skills/local-llm-subagent/SKILL.md`. After bumping, run `npm run build:plugin:claude` (or `npm run build:plugin`) and commit the regenerated `plugin/claude/` output together with the source change.
+
+Notes for the Codex generator:
+
+- It copies the compiled server from `dist/` into `plugin/codex/server/`, so run `npm run build` before `npm run build:plugin:codex`.
+- The server is launched via `${PLUGIN_ROOT}/server/start.sh`; the launcher installs the runtime dependency into `${PLUGIN_DATA}` on first run. Do not hardcode absolute repo paths in `.mcp.json`.
+- `node_modules` is not committed. The committed `plugin/codex/server/` carries only the compiled JS plus a minimal `package.json`.
+- Because `plugin/codex/` is committed, regenerate and commit it whenever server behavior or the skill changes.
 
 ## Repository Shape
 

@@ -1,0 +1,34 @@
+{
+  "name": "local-tester",
+  "version": "1.0.0",
+  "description": "Local test execution, verification, and local-LLM triage. Runs validation commands in a workspace, keeps raw logs out of context, and returns compact verdicts via the local_tester MCP server.",
+  "author": {
+    "name": "Lefos13"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "local-test",
+    "mcp",
+    "verdict",
+    "triage",
+    "validation"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Local Tester",
+    "shortDescription": "Run local validation and summarize logs with a local LLM.",
+    "longDescription": "Validate code changes, triage failures, review changed files, check regressions, digest noisy commands, and scout codebases without flooding the conversation with raw logs.",
+    "developerName": "Lefos13",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Run"
+    ],
+    "defaultPrompt": [
+      "Use Local Tester to validate my current code changes.",
+      "Use Local Tester to triage the failing test log."
+    ],
+    "brandColor": "#10A37F"
+  }
+}

@@ -330,16 +330,17 @@ Restart or reload the MCP client after changing the server path, environment var
 
 ## Plugins
 
-This repository can generate the `local-tester` plugin for **two different clients**, each with its own generator and output directory. Both ship the same skill content (from `skill/skill-example.md`), but package it differently — including a different skill folder/invocation name per client (see the table).
+This repository can generate the `local-tester` plugin for **three different clients**, each with its own generator and output directory. All variants ship the same skill content (from `skill/skill-example.md`), but package it differently for each client.
 
 | Client      | npm script                     | Output             | Tracked in git | Packaging                                                                 |
 | ----------- | ------------------------------ | ------------------ | -------------- | ------------------------------------------------------------------------ |
 | Antigravity | `npm run build:plugin:antigravity` | `plugin/antigravity/` | No (gitignored) | Root `plugin.json` + `skills/`. MCP server configured separately by you. |
 | Claude Code | `npm run build:plugin:claude`      | `plugin/claude/`      | Yes            | `.claude-plugin/` manifest, bundled portable MCP server, local marketplace. |
+| Codex       | `npm run build:plugin:codex`       | `plugin/codex/`       | Yes            | `.codex-plugin/` manifest, bundled portable MCP server, repo marketplace. |
 
-Run both at once with `npm run build:plugin`.
+Run all generators at once with `npm run build:plugin`.
 
-> Do not edit files under `plugin/` by hand; they are generated. The Antigravity output is gitignored, while the Claude Code output is committed so the git-based marketplace install can copy it.
+> Do not edit files under `plugin/` by hand; they are generated. The Antigravity output is gitignored, while the Claude Code and Codex outputs are committed so marketplace installs can copy them.
 
 ### Antigravity
 
@@ -414,6 +415,31 @@ For local development you can skip the marketplace entirely and load the plugin 
 ```bash
 claude --plugin-dir ./plugin/claude
 ```
+
+### Codex
+
+The Codex plugin is self-contained and portable: it bundles the compiled MCP server under `plugin/codex/server/` and launches it via `${PLUGIN_ROOT}/server/start.sh`, so no absolute repo paths are baked in. On first run the launcher installs the single runtime dependency (`@modelcontextprotocol/sdk`) into the persistent `${PLUGIN_DATA}` directory, then starts the server.
+
+The repository exposes a Codex marketplace at `.agents/plugins/marketplace.json`, which lists the plugin via the relative source `./plugin/codex`. Both the catalog and generated plugin are committed so Codex can install the plugin from the repository marketplace.
+
+1. Build the server and generate the plugin:
+
+   ```bash
+   npm run build
+   npm run build:plugin:codex
+   ```
+
+2. Add the repository as a Codex marketplace:
+
+   ```bash
+   codex plugin marketplace add "$(pwd)"
+   ```
+
+3. Install or enable the `local-tester` plugin in Codex, then restart or reload Codex so the MCP server and skill load.
+
+The skill is available as `local-llm-subagent` and is also model-invoked automatically based on its description. The bundled MCP server is named `local_tester`.
+
+**Requirements on the target machine:** `node` and `npm` on `PATH`, plus network access the first time (to install the dependency). After that the server runs offline. Override the LLM endpoint with the same environment variables described in [MCP Client Setup](#mcp-client-setup) (`LOCAL_LLM_API_URL`, `LOCAL_LLM_MODEL`, and the per-task `LOCAL_LLM_*_MODEL` overrides).
 
 ## Typical Agent Workflow
 
