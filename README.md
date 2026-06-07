@@ -176,30 +176,42 @@ Every run executed by the server is appended to `.codex-local-test-runs/index.js
 
 ## Context Analytics
 
-Every successful tool path records private analytics under the MCP server project:
+Every successful tool path records private analytics **inside the target workspace**, alongside its raw run logs, registry, and baseline:
 
 ```text
-<local-tester-mcp>/.codex-local-test-runs/analytics.json
-<local-tester-mcp>/.codex-local-test-runs/analytics-summary.json
+<workspacePath>/.codex-local-test-runs/analytics.json
+<workspacePath>/.codex-local-test-runs/analytics-summary.json
 ```
 
-These files are for later user inspection and are not returned in MCP tool responses. Records keep the latest 200 tool calls and include compact metadata only: tool name, timestamp, target workspace path, `runId` or relative log path when available, commands and exit codes when applicable, token counts, estimated main-context tokens saved, savings percentage, local provider/model, latency, availability, confidence, fallback reason, whether raw output was avoided, and whether token usage came from the local LLM API or estimator fallback.
+Storing analytics in the workspace (rather than in the MCP server's own project directory) keeps them readable from the project they describe, portable across machines, and unaffected by where the server itself is installed or run from — including when it runs from inside a bundled Claude Code plugin, where the server's own directory is ephemeral.
+
+These files are for later user inspection and are not returned in MCP tool responses. Records keep the latest 200 tool calls per workspace and include compact metadata only: tool name, timestamp, target workspace path, `runId` or relative log path when available, commands and exit codes when applicable, token counts, estimated main-context tokens saved, savings percentage, local provider/model, latency, availability, confidence, fallback reason, whether raw output was avoided, and whether token usage came from the local LLM API or estimator fallback.
 
 The server uses OpenAI-compatible `usage.prompt_tokens`, `usage.completion_tokens`, and `usage.total_tokens` when the local endpoint provides them. If usage is missing, it falls back to the same rough `~4 chars/token` estimator used for raw-log and MCP-response sizing. Analytics writes are best-effort and never fail the underlying tool call. Raw logs, prompts, file contents, and full model responses are not stored in analytics records.
 
-To view the analytics in a browser, run:
+### Multi-Workspace Analytics Dashboard
+
+To view analytics in a browser, run (from the MCP server project):
 
 ```sh
 npm run analytics:ui
 ```
 
-By default, the dashboard reads analytics from the MCP server project and serves `http://127.0.0.1:8787`. To use a different port:
+By default, the dashboard serves `http://127.0.0.1:8787`. To use a different port:
 
 ```sh
 npm run analytics:ui -- --port 8787
 ```
 
-The command runs the compiled server from `dist/analytics-ui.js`. The dashboard separates MCP tool-call count from shell-command count and lists every command in an event with its exit code, so a single `run_test_verdict` or `run_command_digest` call can show multiple underlying commands. For debugging or migration, `--store /absolute/path` can point the UI at another analytics store, but normal MCP tool calls always write analytics to the MCP project.
+The command runs the compiled server from `dist/analytics-ui.js`. Because analytics now live inside each workspace, the dashboard is **workspace-aware**:
+
+- **Add workspaces**: paste an absolute path to any project that has run local-tester tools into the "Add workspace" box. The dashboard reads `<path>/.codex-local-test-runs/analytics.json` and `analytics-summary.json` for that workspace. Workspaces with no analytics yet are still listed (with a "no analytics yet" badge) so you can confirm the path before tool calls populate it.
+- **Persisted list**: registered workspaces are stored at `~/.local-tester-analytics/workspaces.json` (in your home directory, independent of any single project) so the list survives restarts and works no matter which project the dashboard is launched from. You can also seed the list from the command line with one or more `--workspace /absolute/path` flags (`--store` is accepted as an alias); on first run with no persisted or CLI-provided workspaces, the dashboard seeds itself with the current working directory.
+- **Cross-project view**: the "Viewing" selector switches between "All workspaces" (an aggregated summary and a single merged, newest-first event feed tagged with each event's source workspace) and any single registered workspace.
+- **Pagination**: the event feed is paginated (10/25/50/100 per page, default 25) with Prev/Next controls and a "Showing X-Y of Z" indicator, so long histories across many projects stay manageable.
+- **Remove workspaces**: each row in the Workspaces panel has a "Remove" button that drops it from the persisted list (it does not delete any analytics files).
+
+The dashboard separates MCP tool-call count from shell-command count and lists every command in an event with its exit code, so a single `run_test_verdict` or `run_command_digest` call can show multiple underlying commands.
 
 ## Requirements
 

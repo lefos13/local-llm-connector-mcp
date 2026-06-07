@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as http from 'http';
+import * as os from 'os';
 import * as path from 'path';
 import { URL } from 'url';
 
@@ -20,6 +21,8 @@ interface AnalyticsRecord {
   estimatedTokensSaved: number;
   savingsPercentage: number;
   measurementSource: string;
+  /* Stamped by the UI (not persisted) when records from several workspaces are merged into one feed. */
+  sourceWorkspace?: string;
 }
 
 interface AnalyticsSummary {
@@ -33,28 +36,53 @@ interface AnalyticsSummary {
   averageSavingsPercentage: number;
 }
 
-interface AnalyticsPayload {
-  storePath: string;
-  analyticsPath: string;
-  summaryPath: string;
+interface WorkspaceLoadResult {
+  path: string;
   available: boolean;
   error?: string;
   summary: AnalyticsSummary;
   records: AnalyticsRecord[];
 }
 
+interface WorkspaceInfo {
+  path: string;
+  available: boolean;
+  error?: string;
+  recordCount: number;
+  summary: AnalyticsSummary;
+}
+
+interface AnalyticsApiResponse {
+  scope: string;
+  workspaces: WorkspaceInfo[];
+  summary: AnalyticsSummary;
+  page: number;
+  pageSize: number;
+  totalRecords: number;
+  totalPages: number;
+  records: AnalyticsRecord[];
+}
+
 const LOG_DIR = '.codex-local-test-runs';
 const DEFAULT_PORT = 8787;
-const SERVER_PROJECT_ROOT = path.resolve(__dirname, '..');
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 200;
+const MAX_REQUEST_BODY_BYTES = 64 * 1024;
 
-function parseArgs(argv: string[]): { storePath: string; port: number } {
-  let storePath = SERVER_PROJECT_ROOT;
+/* The list of registered workspaces is kept outside any single workspace (in the
+   user's home directory) so the dashboard can aggregate analytics from many
+   projects regardless of where it is launched from. It persists across restarts. */
+const CONFIG_DIR = path.join(os.homedir(), '.local-tester-analytics');
+const WORKSPACES_FILE = path.join(CONFIG_DIR, 'workspaces.json');
+
+function parseArgs(argv: string[]): { seedWorkspaces: string[]; port: number } {
+  const seedWorkspaces: string[] = [];
   let port = Number(process.env.PORT || DEFAULT_PORT);
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if ((arg === '--store' || arg === '--workspace' || arg === '-w') && argv[i + 1]) {
-      storePath = path.resolve(argv[++i]);
+    if ((arg === '--workspace' || arg === '--store' || arg === '-w') && argv[i + 1]) {
+      seedWorkspaces.push(path.resolve(argv[++i]));
     } else if ((arg === '--port' || arg === '-p') && argv[i + 1]) {
       port = Number(argv[++i]);
     }
@@ -64,7 +92,7 @@ function parseArgs(argv: string[]): { storePath: string; port: number } {
     throw new Error(`Invalid port: ${port}`);
   }
 
-  return { storePath, port };
+  return { seedWorkspaces, port };
 }
 
 function emptySummary(): AnalyticsSummary {
@@ -84,17 +112,46 @@ function readJson<T>(filePath: string): T {
   return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T;
 }
 
-function loadAnalytics(storePath: string): AnalyticsPayload {
-  const analyticsPath = path.join(storePath, LOG_DIR, 'analytics.json');
-  const summaryPath = path.join(storePath, LOG_DIR, 'analytics-summary.json');
+/* Registered workspaces persist in the user's home directory so the dashboard
+   remembers them across restarts and across the many projects it reports on. */
+function loadWorkspaceList(): string[] {
+  try {
+    if (!fs.existsSync(WORKSPACES_FILE)) {
+      return [];
+    }
+    const parsed = JSON.parse(fs.readFileSync(WORKSPACES_FILE, 'utf8'));
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const entry of parsed) {
+      if (typeof entry === 'string' && entry.trim() && !seen.has(entry)) {
+        seen.add(entry);
+        result.push(entry);
+      }
+    }
+    return result;
+  } catch {
+    return [];
+  }
+}
+
+function saveWorkspaceList(workspaces: string[]): void {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(workspaces, null, 2), 'utf8');
+}
+
+function loadWorkspaceAnalytics(workspacePath: string): WorkspaceLoadResult {
+  const dir = path.join(workspacePath, LOG_DIR);
+  const analyticsPath = path.join(dir, 'analytics.json');
+  const summaryPath = path.join(dir, 'analytics-summary.json');
 
   if (!fs.existsSync(analyticsPath) || !fs.existsSync(summaryPath)) {
     return {
-      storePath,
-      analyticsPath,
-      summaryPath,
+      path: workspacePath,
       available: false,
-      error: `Analytics files were not found under ${path.join(storePath, LOG_DIR)}.`,
+      error: `Analytics files were not found under ${dir}.`,
       summary: emptySummary(),
       records: []
     };
@@ -104,18 +161,14 @@ function loadAnalytics(storePath: string): AnalyticsPayload {
     const records = readJson<AnalyticsRecord[]>(analyticsPath);
     const summary = readJson<AnalyticsSummary>(summaryPath);
     return {
-      storePath,
-      analyticsPath,
-      summaryPath,
+      path: workspacePath,
       available: true,
       summary,
-      records: Array.isArray(records) ? records.slice().reverse() : []
+      records: Array.isArray(records) ? records : []
     };
   } catch (error: any) {
     return {
-      storePath,
-      analyticsPath,
-      summaryPath,
+      path: workspacePath,
       available: false,
       error: `Failed to read analytics: ${error.message || error}`,
       summary: emptySummary(),
@@ -124,12 +177,137 @@ function loadAnalytics(storePath: string): AnalyticsPayload {
   }
 }
 
+/* Combines per-workspace summaries into one cross-project view. Token and call
+   counts sum directly; the average savings percentage is recomputed as a
+   call-weighted mean so workspaces with more recorded calls are not diluted by
+   workspaces with only a couple. */
+function combineSummaries(loaded: WorkspaceLoadResult[]): AnalyticsSummary {
+  const combined = emptySummary();
+  let savingsWeighted = 0;
+  let latestUpdatedAt = '';
+
+  for (const entry of loaded) {
+    if (!entry.available) continue;
+    const summary = entry.summary;
+    combined.totalCalls += summary.totalCalls;
+    combined.totalRawSourceTokens += summary.totalRawSourceTokens;
+    combined.totalLocalLlmTokens += summary.totalLocalLlmTokens;
+    combined.totalReturnedToMainTokens += summary.totalReturnedToMainTokens;
+    combined.totalEstimatedMainContextTokensSaved += summary.totalEstimatedMainContextTokensSaved;
+    savingsWeighted += summary.averageSavingsPercentage * summary.totalCalls;
+    for (const [tool, count] of Object.entries(summary.callsByTool || {})) {
+      combined.callsByTool[tool] = (combined.callsByTool[tool] || 0) + count;
+    }
+    if (summary.updatedAt && summary.updatedAt > latestUpdatedAt) {
+      latestUpdatedAt = summary.updatedAt;
+    }
+  }
+
+  combined.averageSavingsPercentage = combined.totalCalls > 0
+    ? Number((savingsWeighted / combined.totalCalls).toFixed(4))
+    : 0;
+  combined.updatedAt = latestUpdatedAt;
+  return combined;
+}
+
+function clampPageSize(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_PAGE_SIZE;
+  return Math.min(MAX_PAGE_SIZE, Math.floor(value));
+}
+
+function clampPage(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 1;
+  return Math.floor(value);
+}
+
+function readRequestBody(req: http.IncomingMessage): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    let bytes = 0;
+    req.on('data', (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > MAX_REQUEST_BODY_BYTES) {
+        req.destroy();
+        reject(new Error('Request body too large'));
+        return;
+      }
+      data += chunk.toString('utf8');
+    });
+    req.on('end', () => {
+      if (!data.trim()) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(data));
+      } catch {
+        reject(new Error('Invalid JSON request body'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
 function send(res: http.ServerResponse, statusCode: number, contentType: string, body: string): void {
   res.writeHead(statusCode, {
     'Content-Type': contentType,
     'Cache-Control': 'no-store'
   });
   res.end(body);
+}
+
+function sendJson(res: http.ServerResponse, statusCode: number, payload: unknown): void {
+  send(res, statusCode, 'application/json; charset=utf-8', JSON.stringify(payload, null, 2));
+}
+
+/* Builds the cross-workspace analytics payload for a given scope ('all' or one
+   workspace path), sorted newest-first and paginated. Records are tagged with
+   their source workspace so the 'all' view can attribute each event. */
+function buildAnalyticsResponse(
+  registered: string[],
+  scope: string,
+  page: number,
+  pageSize: number
+): AnalyticsApiResponse {
+  const loaded = registered.map(loadWorkspaceAnalytics);
+
+  const targets = scope === 'all' ? loaded : loaded.filter((entry) => entry.path === scope);
+
+  const merged: AnalyticsRecord[] = [];
+  for (const entry of targets) {
+    if (!entry.available) continue;
+    for (const record of entry.records) {
+      merged.push(scope === 'all' ? { ...record, sourceWorkspace: entry.path } : record);
+    }
+  }
+  merged.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+
+  const totalRecords = merged.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * pageSize;
+  const pageRecords = merged.slice(start, start + pageSize);
+
+  const summary = scope === 'all'
+    ? combineSummaries(loaded)
+    : (targets[0] ? targets[0].summary : emptySummary());
+
+  return {
+    scope,
+    workspaces: loaded.map((entry) => ({
+      path: entry.path,
+      available: entry.available,
+      error: entry.error,
+      recordCount: entry.records.length,
+      summary: entry.summary
+    })),
+    summary,
+    page: safePage,
+    pageSize,
+    totalRecords,
+    totalPages,
+    records: pageRecords
+  };
 }
 
 /* The dashboard is intentionally shipped as one self-contained HTML document so the compiled dist command can run without bundlers, static asset copying, or extra dependencies. */
@@ -174,6 +352,7 @@ function renderHtml(): string {
       justify-content: space-between;
       gap: 16px;
       padding: 18px 0;
+      flex-wrap: wrap;
     }
     h1, h2 {
       margin: 0;
@@ -202,7 +381,28 @@ function renderHtml(): string {
       font: inherit;
       padding: 8px 12px;
     }
-    button:hover { border-color: var(--accent); }
+    button:hover:not(:disabled) { border-color: var(--accent); }
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    button.danger {
+      color: var(--danger);
+    }
+    button.danger:hover { border-color: var(--danger); }
+    select, input[type="text"] {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 6px;
+      color: var(--text);
+      font: inherit;
+      padding: 8px 10px;
+    }
     main {
       padding: 20px 0 32px;
     }
@@ -216,6 +416,77 @@ function renderHtml(): string {
       margin-bottom: 16px;
       color: var(--text);
     }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 18px;
+    }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .add-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .add-row input[type="text"] {
+      flex: 1;
+      min-width: 240px;
+    }
+    .workspace-list {
+      display: grid;
+      gap: 8px;
+    }
+    .workspace-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      background: var(--surface-2);
+    }
+    .workspace-row .ws-path {
+      flex: 1;
+      overflow-wrap: anywhere;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+    }
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 9px;
+      white-space: nowrap;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .badge.ok {
+      background: #ecfdf5;
+      color: var(--accent);
+      border: 1px solid #b7e4d8;
+    }
+    .badge.missing {
+      background: #fff1f0;
+      color: var(--danger);
+      border: 1px solid #f3c7c1;
+    }
+    .scope-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+    .scope-row .meta { white-space: nowrap; }
     .grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -388,6 +659,19 @@ function renderHtml(): string {
       border: 1px solid var(--border);
       border-radius: 10px;
     }
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+    .pagination .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
     @media (max-width: 900px) {
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .tool-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -405,13 +689,32 @@ function renderHtml(): string {
     <div class="wrap topbar">
       <div>
         <h1>Local Tester Analytics</h1>
-        <div class="meta" id="store">Loading analytics store...</div>
+        <div class="meta" id="store">Loading workspaces...</div>
       </div>
       <button type="button" id="refresh">Refresh</button>
     </div>
   </header>
   <main class="wrap">
     <div class="notice" id="notice"></div>
+
+    <section class="panel" aria-label="Registered workspaces">
+      <div class="panel-head">
+        <h2 style="margin-bottom:0">Workspaces</h2>
+        <span class="meta" id="workspaceCount"></span>
+      </div>
+      <form class="add-row" id="addForm">
+        <input type="text" id="addInput" placeholder="/absolute/path/to/workspace" autocomplete="off">
+        <button type="submit" class="primary">Add workspace</button>
+      </form>
+      <div class="workspace-list" id="workspaceList" style="margin-top:12px"></div>
+    </section>
+
+    <div class="scope-row">
+      <span class="meta">Viewing</span>
+      <select id="scopeSelect"></select>
+      <span class="meta" id="scopeMeta"></span>
+    </div>
+
     <section class="grid" aria-label="Analytics summary">
       <div class="card"><div class="label">MCP tool calls</div><div class="value" id="totalCalls">0</div></div>
       <div class="card"><div class="label">Shell commands</div><div class="value" id="commandCount">0</div></div>
@@ -420,7 +723,6 @@ function renderHtml(): string {
       <div class="card"><div class="label">Returned main-model tokens</div><div class="value" id="returnedTokens">0</div></div>
       <div class="card"><div class="label">Estimated tokens saved</div><div class="value" id="savedTokens">0</div></div>
       <div class="card"><div class="label">Average savings</div><div class="value" id="avgSavings">0%</div></div>
-      <div class="card"><div class="label">Records loaded</div><div class="value" id="recordCount">0</div></div>
       <div class="card"><div class="label">Updated</div><div class="value" id="updatedAt">-</div></div>
     </section>
     <section class="section">
@@ -430,12 +732,32 @@ function renderHtml(): string {
     <section class="section">
       <h2>Recent Events</h2>
       <div class="events" id="events"></div>
+      <div class="pagination" id="pagination">
+        <span class="meta" id="pageInfo"></span>
+        <div class="controls">
+          <label class="meta" for="pageSizeSelect">Per page</label>
+          <select id="pageSizeSelect">
+            <option value="10">10</option>
+            <option value="25" selected>25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+          <button type="button" id="prevPage">Prev</button>
+          <button type="button" id="nextPage">Next</button>
+        </div>
+      </div>
     </section>
   </main>
   <script>
     const ids = {
       store: document.getElementById('store'),
       notice: document.getElementById('notice'),
+      workspaceCount: document.getElementById('workspaceCount'),
+      addForm: document.getElementById('addForm'),
+      addInput: document.getElementById('addInput'),
+      workspaceList: document.getElementById('workspaceList'),
+      scopeSelect: document.getElementById('scopeSelect'),
+      scopeMeta: document.getElementById('scopeMeta'),
       totalCalls: document.getElementById('totalCalls'),
       commandCount: document.getElementById('commandCount'),
       rawTokens: document.getElementById('rawTokens'),
@@ -443,11 +765,16 @@ function renderHtml(): string {
       returnedTokens: document.getElementById('returnedTokens'),
       savedTokens: document.getElementById('savedTokens'),
       avgSavings: document.getElementById('avgSavings'),
-      recordCount: document.getElementById('recordCount'),
       updatedAt: document.getElementById('updatedAt'),
       toolList: document.getElementById('toolList'),
-      events: document.getElementById('events')
+      events: document.getElementById('events'),
+      pageInfo: document.getElementById('pageInfo'),
+      pageSizeSelect: document.getElementById('pageSizeSelect'),
+      prevPage: document.getElementById('prevPage'),
+      nextPage: document.getElementById('nextPage')
     };
+
+    const state = { scope: 'all', page: 1, pageSize: 25 };
 
     const fmt = new Intl.NumberFormat();
     const percent = (n) => ((Number(n || 0) * 100).toFixed(1) + '%');
@@ -455,6 +782,16 @@ function renderHtml(): string {
 
     function setText(el, text) {
       el.textContent = text;
+    }
+
+    function showNotice(message) {
+      if (message) {
+        ids.notice.style.display = 'block';
+        ids.notice.textContent = message;
+      } else {
+        ids.notice.style.display = 'none';
+        ids.notice.textContent = '';
+      }
     }
 
     function renderTools(callsByTool) {
@@ -532,7 +869,7 @@ function renderHtml(): string {
       return metric;
     }
 
-    /* Each analytics record is rendered as a card: a header line (tool, time, source, savings), full-width path/run fields that can wrap freely, the command list, and a tabular metrics strip for the token counts. */
+    /* Each analytics record is rendered as a card: a header line (tool, time, source, savings), full-width path/run fields that can wrap freely, the command list, and a tabular metrics strip for the token counts. When viewing 'All workspaces' each card also gets a workspace tag so events from different projects stay distinguishable in the merged feed. */
     function renderEvents(records) {
       ids.events.textContent = '';
       if (!records || records.length === 0) {
@@ -562,7 +899,14 @@ function renderHtml(): string {
         const savings = document.createElement('span');
         savings.className = 'event-savings';
         savings.textContent = percent(record.savingsPercentage) + ' saved';
-        head.append(tool, time, source, spacer, savings);
+        head.append(tool, time, source);
+        if (record.sourceWorkspace) {
+          const ws = document.createElement('span');
+          ws.className = 'source';
+          ws.textContent = record.sourceWorkspace;
+          head.appendChild(ws);
+        }
+        head.append(spacer, savings);
         card.appendChild(head);
 
         if (record.targetWorkspacePath) {
@@ -594,12 +938,139 @@ function renderHtml(): string {
       }
     }
 
+    function renderWorkspaceList(workspaces) {
+      ids.workspaceList.textContent = '';
+      setText(ids.workspaceCount, workspaces.length + (workspaces.length === 1 ? ' workspace' : ' workspaces'));
+      if (workspaces.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = 'No workspaces registered yet. Add an absolute path to a project that has run local-tester tools.';
+        ids.workspaceList.appendChild(empty);
+        return;
+      }
+      for (const ws of workspaces) {
+        const row = document.createElement('div');
+        row.className = 'workspace-row';
+
+        const p = document.createElement('span');
+        p.className = 'ws-path';
+        p.textContent = ws.path;
+
+        const badge = document.createElement('span');
+        badge.className = 'badge ' + (ws.available ? 'ok' : 'missing');
+        badge.textContent = ws.available ? num(ws.recordCount) + ' records' : 'no analytics yet';
+        if (!ws.available && ws.error) {
+          badge.title = ws.error;
+        }
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'danger';
+        remove.textContent = 'Remove';
+        remove.addEventListener('click', () => removeWorkspace(ws.path));
+
+        row.append(p, badge, remove);
+        ids.workspaceList.appendChild(row);
+      }
+    }
+
+    function renderScopeOptions(workspaces, totalRecords) {
+      const previous = state.scope;
+      ids.scopeSelect.textContent = '';
+
+      const allOpt = document.createElement('option');
+      allOpt.value = 'all';
+      allOpt.textContent = 'All workspaces (' + workspaces.length + ')';
+      ids.scopeSelect.appendChild(allOpt);
+
+      for (const ws of workspaces) {
+        const opt = document.createElement('option');
+        opt.value = ws.path;
+        opt.textContent = ws.path;
+        ids.scopeSelect.appendChild(opt);
+      }
+
+      const stillExists = previous === 'all' || workspaces.some((ws) => ws.path === previous);
+      state.scope = stillExists ? previous : 'all';
+      ids.scopeSelect.value = state.scope;
+      setText(ids.scopeMeta, num(totalRecords) + (totalRecords === 1 ? ' record' : ' records'));
+    }
+
+    function renderPagination(payload) {
+      state.page = payload.page;
+      const start = payload.totalRecords === 0 ? 0 : (payload.page - 1) * payload.pageSize + 1;
+      const end = Math.min(payload.totalRecords, payload.page * payload.pageSize);
+      setText(ids.pageInfo, payload.totalRecords === 0
+        ? 'No records'
+        : ('Showing ' + num(start) + '-' + num(end) + ' of ' + num(payload.totalRecords) + ' · page ' + payload.page + ' of ' + payload.totalPages));
+      ids.prevPage.disabled = payload.page <= 1;
+      ids.nextPage.disabled = payload.page >= payload.totalPages;
+    }
+
+    async function fetchWorkspaces() {
+      const res = await fetch('/api/workspaces', { cache: 'no-store' });
+      if (!res.ok) throw new Error('Failed to load workspaces (HTTP ' + res.status + ')');
+      return res.json();
+    }
+
+    async function addWorkspace(event) {
+      event.preventDefault();
+      const value = ids.addInput.value.trim();
+      if (!value) return;
+      try {
+        const res = await fetch('/api/workspaces', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: value })
+        });
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload.error || ('HTTP ' + res.status));
+        ids.addInput.value = '';
+        showNotice('');
+        await load();
+      } catch (error) {
+        showNotice('Could not add workspace: ' + error.message);
+      }
+    }
+
+    async function removeWorkspace(workspacePath) {
+      try {
+        const res = await fetch('/api/workspaces', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: workspacePath })
+        });
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload.error || ('HTTP ' + res.status));
+        if (state.scope === workspacePath) {
+          state.scope = 'all';
+        }
+        showNotice('');
+        await load();
+      } catch (error) {
+        showNotice('Could not remove workspace: ' + error.message);
+      }
+    }
+
     async function load() {
-      const res = await fetch('/api/analytics', { cache: 'no-store' });
+      const params = new URLSearchParams({
+        workspace: state.scope,
+        page: String(state.page),
+        pageSize: String(state.pageSize)
+      });
+      const res = await fetch('/api/analytics?' + params.toString(), { cache: 'no-store' });
       const payload = await res.json();
+      if (!res.ok) {
+        showNotice(payload.error || ('Failed to load analytics (HTTP ' + res.status + ')'));
+        return;
+      }
+
       const summary = payload.summary || {};
       const records = payload.records || [];
-      setText(ids.store, payload.storePath || '-');
+
+      setText(ids.store, payload.scope === 'all'
+        ? ('Aggregating ' + num((payload.workspaces || []).length) + ' workspace(s)')
+        : payload.scope);
       setText(ids.totalCalls, num(summary.totalCalls));
       setText(ids.commandCount, num(countCommands(records)));
       setText(ids.rawTokens, num(summary.totalRawSourceTokens));
@@ -607,18 +1078,49 @@ function renderHtml(): string {
       setText(ids.returnedTokens, num(summary.totalReturnedToMainTokens));
       setText(ids.savedTokens, num(summary.totalEstimatedMainContextTokensSaved));
       setText(ids.avgSavings, percent(summary.averageSavingsPercentage));
-      setText(ids.recordCount, num(records.length));
       setText(ids.updatedAt, summary.updatedAt ? new Date(summary.updatedAt).toLocaleString() : '-');
-      ids.notice.style.display = payload.available ? 'none' : 'block';
-      ids.notice.textContent = payload.error || '';
+
+      const unavailable = (payload.workspaces || []).filter((ws) => !ws.available);
+      if (unavailable.length > 0 && (payload.workspaces || []).length > 0) {
+        showNotice(unavailable.length + ' of ' + payload.workspaces.length + ' workspace(s) have no analytics yet (no local-tester tool calls recorded there so far).');
+      } else {
+        showNotice('');
+      }
+
+      renderWorkspaceList(payload.workspaces || []);
+      renderScopeOptions(payload.workspaces || [], payload.totalRecords || 0);
       renderTools(summary.callsByTool);
       renderEvents(records);
+      renderPagination(payload);
     }
 
-    document.getElementById('refresh').addEventListener('click', load);
+    ids.addForm.addEventListener('submit', addWorkspace);
+    ids.scopeSelect.addEventListener('change', () => {
+      state.scope = ids.scopeSelect.value;
+      state.page = 1;
+      load().catch((error) => showNotice('Failed to load analytics: ' + error.message));
+    });
+    ids.pageSizeSelect.addEventListener('change', () => {
+      state.pageSize = Number(ids.pageSizeSelect.value) || 25;
+      state.page = 1;
+      load().catch((error) => showNotice('Failed to load analytics: ' + error.message));
+    });
+    ids.prevPage.addEventListener('click', () => {
+      if (state.page > 1) {
+        state.page -= 1;
+        load().catch((error) => showNotice('Failed to load analytics: ' + error.message));
+      }
+    });
+    ids.nextPage.addEventListener('click', () => {
+      state.page += 1;
+      load().catch((error) => showNotice('Failed to load analytics: ' + error.message));
+    });
+    document.getElementById('refresh').addEventListener('click', () => {
+      load().catch((error) => showNotice('Failed to load analytics: ' + error.message));
+    });
+
     load().catch((error) => {
-      ids.notice.style.display = 'block';
-      ids.notice.textContent = 'Failed to load analytics: ' + error.message;
+      showNotice('Failed to load analytics: ' + error.message);
     });
   </script>
 </body>
@@ -626,25 +1128,115 @@ function renderHtml(): string {
 }
 
 function start(): void {
-  const { storePath, port } = parseArgs(process.argv.slice(2));
-  const server = http.createServer((req, res) => {
-    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-    if (url.pathname === '/') {
-      send(res, 200, 'text/html; charset=utf-8', renderHtml());
-      return;
+  const { seedWorkspaces, port } = parseArgs(process.argv.slice(2));
+
+  let workspaces = loadWorkspaceList();
+  let changed = false;
+  for (const seed of seedWorkspaces) {
+    if (!workspaces.includes(seed)) {
+      workspaces.push(seed);
+      changed = true;
     }
-    if (url.pathname === '/api/analytics') {
-      send(res, 200, 'application/json; charset=utf-8', JSON.stringify(loadAnalytics(storePath), null, 2));
-      return;
+  }
+  if (workspaces.length === 0) {
+    /* No persisted or CLI-provided workspaces yet: seed with the directory the
+       command was launched from so the dashboard shows something useful on first run. */
+    workspaces.push(process.cwd());
+    changed = true;
+  }
+  if (changed) {
+    saveWorkspaceList(workspaces);
+  }
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+
+      if (url.pathname === '/') {
+        send(res, 200, 'text/html; charset=utf-8', renderHtml());
+        return;
+      }
+
+      if (url.pathname === '/api/workspaces') {
+        if (req.method === 'GET') {
+          const registered = loadWorkspaceList();
+          const info: WorkspaceInfo[] = registered.map((p) => {
+            const loaded = loadWorkspaceAnalytics(p);
+            return {
+              path: p,
+              available: loaded.available,
+              error: loaded.error,
+              recordCount: loaded.records.length,
+              summary: loaded.summary
+            };
+          });
+          sendJson(res, 200, { workspaces: info });
+          return;
+        }
+
+        if (req.method === 'POST') {
+          const body = await readRequestBody(req);
+          const raw = typeof body.path === 'string' ? body.path.trim() : '';
+          if (!raw) {
+            sendJson(res, 400, { error: 'Provide an absolute workspace path in "path".' });
+            return;
+          }
+          const resolved = path.resolve(raw);
+          if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+            sendJson(res, 400, { error: `Path does not exist or is not a directory: ${resolved}` });
+            return;
+          }
+          const registered = loadWorkspaceList();
+          if (!registered.includes(resolved)) {
+            registered.push(resolved);
+            saveWorkspaceList(registered);
+          }
+          sendJson(res, 200, { workspaces: registered });
+          return;
+        }
+
+        if (req.method === 'DELETE') {
+          const body = await readRequestBody(req);
+          const raw = typeof body.path === 'string' ? body.path.trim() : (url.searchParams.get('path') || '');
+          if (!raw) {
+            sendJson(res, 400, { error: 'Provide the workspace path to remove in "path".' });
+            return;
+          }
+          const resolved = path.resolve(raw);
+          const registered = loadWorkspaceList().filter((p) => p !== resolved);
+          saveWorkspaceList(registered);
+          sendJson(res, 200, { workspaces: registered });
+          return;
+        }
+
+        send(res, 405, 'text/plain; charset=utf-8', 'Method not allowed');
+        return;
+      }
+
+      if (url.pathname === '/api/analytics') {
+        const scope = url.searchParams.get('workspace') || 'all';
+        const page = clampPage(parseInt(url.searchParams.get('page') || '1', 10));
+        const pageSize = clampPageSize(parseInt(url.searchParams.get('pageSize') || String(DEFAULT_PAGE_SIZE), 10));
+        const registered = loadWorkspaceList();
+        sendJson(res, 200, buildAnalyticsResponse(registered, scope, page, pageSize));
+        return;
+      }
+
+      send(res, 404, 'text/plain; charset=utf-8', 'Not found');
+    } catch (error: any) {
+      sendJson(res, 500, { error: error.message || String(error) });
     }
-    send(res, 404, 'text/plain; charset=utf-8', 'Not found');
   });
 
   server.listen(port, '127.0.0.1', () => {
     const address = server.address();
     const actualPort = typeof address === 'object' && address ? address.port : port;
     console.log(`Analytics UI: http://127.0.0.1:${actualPort}`);
-    console.log(`Analytics store: ${storePath}`);
+    console.log(`Registered workspaces (${workspaces.length}):`);
+    for (const ws of workspaces) {
+      console.log(`  - ${ws}`);
+    }
+    console.log(`Workspace list stored at: ${WORKSPACES_FILE}`);
   });
 }
 

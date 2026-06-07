@@ -49,14 +49,17 @@ const LOG_DIR = '.codex-local-test-runs';
 const ANALYTICS_FILE = 'analytics.json';
 const SUMMARY_FILE = 'analytics-summary.json';
 const MAX_RECORDS = 200;
-const SERVER_PROJECT_ROOT = path.resolve(__dirname, '..');
 
-export function analyticsStoreRoot(): string {
-  return SERVER_PROJECT_ROOT;
+/* Analytics are stored inside the target workspace, alongside its raw run logs
+   and baseline, so they travel with the project being validated (and remain
+   readable/portable regardless of where the MCP server itself is installed —
+   including from inside a bundled Claude Code plugin). */
+export function analyticsStoreRoot(targetWorkspacePath: string): string {
+  return targetWorkspacePath;
 }
 
-function analyticsDir(): string {
-  return path.join(analyticsStoreRoot(), LOG_DIR);
+function analyticsDir(targetWorkspacePath: string): string {
+  return path.join(analyticsStoreRoot(targetWorkspacePath), LOG_DIR);
 }
 
 function readRecords(filePath: string): AnalyticsRecord[] {
@@ -169,10 +172,13 @@ export function buildAnalyticsRecord(input: {
   };
 }
 
-/* Analytics are operational evidence, not part of the MCP contract. Writes are centralized in the MCP project so one UI can report every target workspace without touching those workspaces. */
-export function recordAnalytics(_targetWorkspacePath: string, record: AnalyticsRecord): void {
+/* Analytics are operational evidence, not part of the MCP contract. Each workspace
+   keeps its own analytics under its .codex-local-test-runs/ directory (next to its
+   raw logs and baseline), so they remain readable from the workspace itself and
+   the analytics UI can be pointed at any number of workspaces to report on them. */
+export function recordAnalytics(targetWorkspacePath: string, record: AnalyticsRecord): void {
   try {
-    const dir = analyticsDir();
+    const dir = analyticsDir(targetWorkspacePath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
