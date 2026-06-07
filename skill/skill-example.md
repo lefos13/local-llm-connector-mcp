@@ -29,7 +29,7 @@ Currently implemented server tools:
 6. Pass a short `taskSummary` that describes the concrete code change or validation goal, not a broad audit request.
 7. Pass `changedFiles` when available, using repo-relative paths for tools that resolve files under `workspacePath`.
 8. Treat returned JSON as the primary signal and avoid raw logs while the summary is actionable.
-9. When `verdict` is `fail` or `uncertain`, prefer `run_failure_triage`, `query_log`, or `grep_log` on the returned `runId`/log before reading raw logs, unless the returned summary already contains enough detail to fix the issue.
+9. When `verdict` is `fail` or `uncertain`, look at the `triage` field in the response (if `autoTriage: true` was passed) or call `run_failure_triage`, `query_log`, or `grep_log` on the returned `runId`/log before reading raw logs, unless the returned summary already contains enough detail to fix the issue.
 10. Use `run_regression_check` only when auto-detected commands are appropriate and updating `.codex-local-test-runs/baseline.json` is acceptable for the workspace.
 
 ## Tool Call Shapes
@@ -54,7 +54,8 @@ Call `run_test_verdict`:
   "testCommand": "npm test",
   "maxOutputLines": 300,
   "timeoutMs": 300000,
-  "parallel": false
+  "parallel": false,
+  "autoTriage": true
 }
 ```
 
@@ -121,8 +122,9 @@ Use commands that exercise the changed surface:
 - Context-savings analytics are intentionally not returned in tool JSON. Inspect `.codex-local-test-runs/analytics.json` and `.codex-local-test-runs/analytics-summary.json` in the MCP server project, or run `npm run analytics:ui` there, when you need local LLM token use, returned MCP response size, estimated tokens saved, and savings percentages.
 - `run_changed_files_review`: Prefer `useDiff: true` in a git repo to review only changed hunks (cheaper, sharper); it falls back to whole-file content for files with no diff or outside git.
 - `run_test_verdict` `pass`: Report the commands run, the verdict, and any residual risk. Do not read or paste raw logs.
-- `run_test_verdict` `fail`: Use the LLM summary and `failures` first. If the fix is not clear, call `run_failure_triage` with the log path before opening raw logs.
-- `run_test_verdict` `uncertain`: Call `run_failure_triage` with the referenced log path. Inspect the raw log file only if triage is missing, vague, contradictory, or not enough for the next debugging step.
+- `run_test_verdict` `fail`: Use the LLM summary, `failures`, and inline `triage` field first. If the fix is not clear, call `run_failure_triage` with the log path before opening raw logs.
+- `run_test_verdict` `uncertain`: Use the inline `triage` field first. If missing, vague, contradictory, or not enough for the next debugging step, call `run_failure_triage` with the referenced log path or inspect the raw log file.
+
 - `run_regression_check`: Treat `isRegression: true` as a signal that the current run failed after a previously successful baseline. Remember the tool overwrites the baseline with the current run.
 - `run_command_digest`: Use `summary` and `keyFindings` as the answer to your `intent`; do not paste the raw output. `exitCode`/`exitCodes` are authoritative, the digest only describes. If `needsRawLogs` is `true` (or the digest is empty because the model was offline), interrogate the log with `query_log`/`grep_log` using the returned `runId` instead of reading it whole.
 - `query_log`: Prefer this over reading `rawLogPath` after a `fail`/`uncertain` verdict. Use `answer` and `relevantExcerpt`; cite `lineRange` if you need to open the exact spot. If `available` is `false`, fall back to `grep_log` or read only the cited slice of the raw log.

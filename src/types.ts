@@ -4,6 +4,13 @@ export interface FailureDetail {
   suggestedFix: string | null;
 }
 
+export interface LogQueryResponse {
+  answer: string;
+  relevantExcerpt: string;
+  lineRange: string;
+  available?: boolean;
+}
+
 export interface VerdictResult {
   verdict: 'pass' | 'fail' | 'uncertain';
   confidence: number;
@@ -13,6 +20,7 @@ export interface VerdictResult {
   rawLogPath: string;
   needsRawLogs?: boolean;
   likelyRelevantToRecentChanges?: boolean;
+  triage?: LogQueryResponse;
 }
 
 export interface RunTestVerdictArgs {
@@ -23,6 +31,7 @@ export interface RunTestVerdictArgs {
   maxOutputLines?: number;
   timeoutMs?: number;
   parallel?: boolean;
+  autoTriage?: boolean;
 }
 
 export interface RunCommandDigestArgs {
@@ -32,3 +41,4 @@ export interface RunCommandDigestArgs {
   timeoutMs?: number;
   maxOutputLines?: number;
 }
+

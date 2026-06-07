@@ -33,6 +33,7 @@ Inputs:
 - `maxOutputLines`: optional cap on how many log lines are sent to the local model. When set, the trimmed log keeps roughly one third of the budget from the start and the rest from the end, preserving trailing error traces.
 - `timeoutMs`: optional per-command timeout in milliseconds. Defaults to `300000` (5 minutes).
 - `parallel`: optional. Run detected commands concurrently instead of sequentially. Logs are still assembled in command order. Use only when the commands are independent.
+- `autoTriage`: optional. When true, automatically query the log on fail/uncertain verdict and attach the triage answer.
 
 Returns a JSON verdict with:
 
@@ -44,6 +45,7 @@ Returns a JSON verdict with:
 - `rawLogPath`: path to the full log, relative to `workspacePath`.
 - `needsRawLogs`: whether the local model needs more log context.
 - `likelyRelevantToRecentChanges`: local model's estimate of whether a failure is connected to the reported `changedFiles`. Omitted when the model is unavailable.
+- `triage`: optional. When `autoTriage` is true and the verdict is `fail` or `uncertain`, contains the query results of the failed/uncertain log query.
 
 ### `run_failure_triage`
 

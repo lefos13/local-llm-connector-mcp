@@ -6,7 +6,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { detectCommands } from './detector';
 import { runSuite, trimLog, numberLines, getGitDiff } from './runner';
-import { queryLocalLLM, queryCodeReview, queryCommandDigest, queryLogQuestion, getLLMUsage } from './llm';
+import { queryLocalLLM, queryCodeReview, queryCommandDigest, queryLogQuestion, getLLMUsage, attachLLMUsage, combineLLMUsage } from './llm';
 import { resolveLogPath, grepLog } from './registry';
 import { RunTestVerdictArgs, RunCommandDigestArgs } from './types';
 import { buildAnalyticsRecord, inferWorkspaceFromLogPath, recordAnalytics } from './analytics';
@@ -94,6 +94,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             parallel: {
               type: 'boolean',
               description: 'Run detected commands concurrently instead of sequentially. Logs are still assembled in command order. Use only when the commands are independent.'
+            },
+            autoTriage: {
+              type: 'boolean',
+              description: 'Optional. When true, automatically triage failures/uncertainties internally and attach the results.'
             }
           },
           required: ['workspacePath', 'taskSummary']
@@ -249,7 +253,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       testCommand,
       maxOutputLines,
       timeoutMs,
-      parallel
+      parallel,
+      autoTriage
     } = args as unknown as RunTestVerdictArgs;
 
     try {
@@ -318,8 +323,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         finalVerdict = 'pass'; // Override if everything exited with 0
       }
 
+      // Auto-triage failure or uncertainty if requested
+      let triageResult: any = undefined;
+      if (autoTriage && (finalVerdict === 'fail' || finalVerdict === 'uncertain')) {
+        const question = "which tests failed, on which lines, and what is the error message?";
+        const numbered = numberLines(suiteResult.rawLogContent);
+        // Default log query budget is 1200 lines
+        const budget = 1200;
+        const startBudget = Math.max(1, Math.floor(budget / 3));
+        const bounded = trimLog(numbered, startBudget, budget - startBudget);
+
+        try {
+          triageResult = await queryLogQuestion(question, bounded);
+        } catch (triageErr: any) {
+          triageResult = {
+            answer: `Failed to query log internally: ${triageErr.message || triageErr}`,
+            relevantExcerpt: '',
+            lineRange: '',
+            available: false
+          };
+        }
+      }
+
+      // Combine LLM usage metrics if we ran auto-triage
+      if (triageResult) {
+        const primaryUsage = getLLMUsage(triage);
+        const secondaryUsage = getLLMUsage(triageResult);
+        const combinedUsage = combineLLMUsage(primaryUsage, secondaryUsage);
+        if (combinedUsage) {
+          attachLLMUsage(triage, combinedUsage);
+        }
+      }
+
       const runId = path.basename(suiteResult.rawLogPath).replace(/\.log$/, '');
-      const output = {
+      const output: any = {
         verdict: finalVerdict,
         confidence: triage.confidence,
         commandsRun: commandsToRun,
@@ -329,6 +366,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         needsRawLogs: triage.needsRawLogs,
         likelyRelevantToRecentChanges: triage.likelyRelevantToRecentChanges
       };
+
+      if (triageResult) {
+        output.triage = triageResult;
+      }
+
       const text = jsonText(output);
       recordToolAnalytics(workspacePath, {
         toolName: 'run_test_verdict',

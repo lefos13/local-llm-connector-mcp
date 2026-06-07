@@ -1,4 +1,4 @@
-import { FailureDetail } from './types';
+import { FailureDetail, LogQueryResponse } from './types';
 
 /* Token usage is attached to parsed local-LLM results as non-enumerable metadata so handlers can persist analytics without leaking those fields into MCP JSON responses. */
 export interface LLMUsage {
@@ -26,7 +26,7 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-function attachLLMUsage<T extends object>(value: T, usage: LLMUsage | undefined): T {
+export function attachLLMUsage<T extends object>(value: T, usage: LLMUsage | undefined): T {
   if (!usage) {
     return value;
   }
@@ -36,6 +36,17 @@ function attachLLMUsage<T extends object>(value: T, usage: LLMUsage | undefined)
     configurable: false
   });
   return value;
+}
+
+export function combineLLMUsage(usage1?: LLMUsage, usage2?: LLMUsage): LLMUsage | undefined {
+  if (!usage1) return usage2;
+  if (!usage2) return usage1;
+  return {
+    promptTokens: usage1.promptTokens + usage2.promptTokens,
+    completionTokens: usage1.completionTokens + usage2.completionTokens,
+    totalTokens: usage1.totalTokens + usage2.totalTokens,
+    source: usage1.source === 'api' || usage2.source === 'api' ? 'api' : 'estimated'
+  };
 }
 
 export interface LLMVerdictResponse {
@@ -324,12 +335,6 @@ ${trimmedLogs}`;
   }
 }
 
-export interface LogQueryResponse {
-  answer: string;
-  relevantExcerpt: string;
-  lineRange: string;
-  available?: boolean;
-}
 
 /* Answer a targeted question about a stored log so the caller never has to read the whole file. The log is supplied with 1-based line-number prefixes so the model can cite an exact lineRange. */
 export async function queryLogQuestion(question: string, numberedLog: string): Promise<LogQueryResponse> {
