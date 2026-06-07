@@ -1,7 +1,7 @@
-import { FailureDetail, LogQueryResponse, ScoutResponse, ScoutPointer } from './types';
+import { FailureDetail, LogQueryResponse, ScoutResponse, ScoutPointer, LLMResponseMetadata } from './types';
 import { FileCandidate } from './runner';
 
-/* Token usage is attached to parsed local-LLM results as non-enumerable metadata so handlers can persist analytics without leaking those fields into MCP JSON responses. */
+/* Token usage is attached as private metadata for analytics, while provider metadata is also copied onto MCP JSON responses so callers can tell which local model answered and whether a fallback path was used. */
 export interface LLMUsage {
   promptTokens: number;
   completionTokens: number;
@@ -12,15 +12,55 @@ export interface LLMUsage {
 interface ChatCompletionResult {
   content: string;
   usage?: LLMUsage;
+  metadata: LLMResponseMetadata;
 }
 
 const LLM_USAGE = Symbol('llmUsage');
+const LLM_METADATA = Symbol('llmMetadata');
+
+export type LLMTaskType = 'verdict' | 'triage' | 'review' | 'digest' | 'scout' | 'query' | 'health';
+
+interface LocalLLMProvider {
+  taskType: LLMTaskType;
+  provider: string;
+  apiUrl: string;
+  model: string;
+}
+
+export interface LLMHealthResponse extends LLMResponseMetadata {
+  apiBase: string;
+  available: boolean;
+  error?: string;
+}
+
+const PROVIDER_NAME = 'local-openai-compatible';
+const DEFAULT_API_URL = 'http://localhost:8080/v1';
+const DEFAULT_MODEL = 'local-model';
+const TASK_MODEL_ENV: Record<LLMTaskType, string | undefined> = {
+  verdict: 'LOCAL_LLM_VERDICT_MODEL',
+  triage: 'LOCAL_LLM_TRIAGE_MODEL',
+  review: 'LOCAL_LLM_REVIEW_MODEL',
+  digest: 'LOCAL_LLM_DIGEST_MODEL',
+  scout: 'LOCAL_LLM_SCOUT_MODEL',
+  query: 'LOCAL_LLM_QUERY_MODEL',
+  health: undefined
+};
+
+const VERDICT_CONFIDENCE_FLOOR = 0.4;
+const SCOUT_POINTER_CONFIDENCE_FLOOR = 0.5;
 
 export function getLLMUsage(value: unknown): LLMUsage | undefined {
   if (!value || typeof value !== 'object') {
     return undefined;
   }
   return (value as any)[LLM_USAGE] as LLMUsage | undefined;
+}
+
+export function getLLMMetadata(value: unknown): LLMResponseMetadata | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  return (value as any)[LLM_METADATA] as LLMResponseMetadata | undefined;
 }
 
 function estimateTokens(text: string): number {
@@ -37,6 +77,47 @@ export function attachLLMUsage<T extends object>(value: T, usage: LLMUsage | und
     configurable: false
   });
   return value;
+}
+
+function attachLLMMetadata<T extends object>(value: T, metadata: LLMResponseMetadata): T {
+  Object.assign(value, metadata);
+  Object.defineProperty(value, LLM_METADATA, {
+    value: metadata,
+    enumerable: false,
+    configurable: true
+  });
+  return value;
+}
+
+function metadataFromProvider(provider: LocalLLMProvider, latencyMs: number, fallbackReason?: string): LLMResponseMetadata {
+  return {
+    llmAvailable: !fallbackReason,
+    llmProvider: provider.provider,
+    llmModel: provider.model,
+    llmLatencyMs: latencyMs,
+    llmTaskType: provider.taskType,
+    ...(fallbackReason ? { fallbackReason } : {})
+  };
+}
+
+function attachLLMResultMetadata<T extends object>(value: T, completion: ChatCompletionResult): T {
+  attachLLMUsage(value, completion.usage);
+  return attachLLMMetadata(value, completion.metadata);
+}
+
+function fallbackMetadata(provider: LocalLLMProvider, error: unknown, latencyMs: number): LLMResponseMetadata {
+  const message = error instanceof Error ? error.message : String(error);
+  return metadataFromProvider(provider, latencyMs, message);
+}
+
+function resolveProvider(taskType: LLMTaskType): LocalLLMProvider {
+  const modelEnvName = TASK_MODEL_ENV[taskType];
+  return {
+    taskType,
+    provider: PROVIDER_NAME,
+    apiUrl: process.env.LOCAL_LLM_API_URL || DEFAULT_API_URL,
+    model: (modelEnvName && process.env[modelEnvName]) || process.env.LOCAL_LLM_MODEL || DEFAULT_MODEL
+  };
 }
 
 export function combineLLMUsage(usage1?: LLMUsage, usage2?: LLMUsage): LLMUsage | undefined {
@@ -106,18 +187,18 @@ function normalizeUsage(data: any, systemPrompt: string, userPrompt: string, raw
   };
 }
 
-/* Shared transport for every local-LLM call: builds the OpenAI-compatible request and returns raw message content plus private token accounting, or throws so each caller can apply its own conservative fallback. */
-async function callChatCompletion(systemPrompt: string, userPrompt: string): Promise<ChatCompletionResult> {
-  const apiUrl = process.env.LOCAL_LLM_API_URL || 'http://localhost:8080/v1';
-  const modelName = process.env.LOCAL_LLM_MODEL || 'local-model';
+/* Shared transport for every local-LLM call: resolves the task-specific local model, builds the OpenAI-compatible request, and returns raw message content plus token/provider accounting. */
+async function callChatCompletion(taskType: LLMTaskType, systemPrompt: string, userPrompt: string): Promise<ChatCompletionResult> {
+  const provider = resolveProvider(taskType);
+  const start = Date.now();
 
-  const response = await fetch(`${apiUrl}/chat/completions`, {
+  const response = await fetch(`${provider.apiUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: modelName,
+      model: provider.model,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
@@ -138,8 +219,45 @@ async function callChatCompletion(systemPrompt: string, userPrompt: string): Pro
   }
   return {
     content: rawContent,
-    usage: normalizeUsage(data, systemPrompt, userPrompt, rawContent)
+    usage: normalizeUsage(data, systemPrompt, userPrompt, rawContent),
+    metadata: metadataFromProvider(provider, Date.now() - start)
   };
+}
+
+function redactApiBase(apiUrl: string): string {
+  const start = Date.now();
+  try {
+    const url = new URL(apiUrl);
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return apiUrl.replace(/[?#].*$/, '');
+  }
+}
+
+export async function checkLocalLLMHealth(): Promise<LLMHealthResponse> {
+  const provider = resolveProvider('health');
+  const systemPrompt = 'Return JSON only.';
+  const userPrompt = 'Return {"ok":true}.';
+  const start = Date.now();
+
+  try {
+    const completion = await callChatCompletion('health', systemPrompt, userPrompt);
+    JSON.parse(extractJSON(completion.content));
+    return {
+      ...completion.metadata,
+      apiBase: redactApiBase(provider.apiUrl),
+      available: true
+    };
+  } catch (error: any) {
+    const latencyMs = Date.now() - start;
+    const metadata = fallbackMetadata(provider, error, latencyMs);
+    return {
+      ...metadata,
+      apiBase: redactApiBase(provider.apiUrl),
+      available: false,
+      error: error.message || String(error)
+    };
+  }
 }
 
 export async function queryLocalLLM(
@@ -147,7 +265,8 @@ export async function queryLocalLLM(
   commandsRun: string[],
   exitCodes: Record<string, number>,
   changedFiles: string[],
-  trimmedLogs: string
+  trimmedLogs: string,
+  taskType: Extract<LLMTaskType, 'verdict' | 'triage'> = 'verdict'
 ): Promise<LLMVerdictResponse> {
   const systemPrompt = `You are a diagnostic and test-log triage assistant.
 You analyze build logs, linter outputs, typechecker warnings/errors, and test execution results.
@@ -182,27 +301,52 @@ Commands Run with Exit Codes: ${JSON.stringify(exitCodes)}
 Logs:
 ${trimmedLogs}`;
 
+  const start = Date.now();
   try {
-    const completion = await callChatCompletion(systemPrompt, userPrompt);
+    const completion = await callChatCompletion(taskType, systemPrompt, userPrompt);
     const jsonString = extractJSON(completion.content);
-    const result = JSON.parse(jsonString) as LLMVerdictResponse;
+    const parsed = JSON.parse(jsonString) as Partial<LLMVerdictResponse>;
+    const result: LLMVerdictResponse = {
+      verdict: parsed.verdict || 'uncertain',
+      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
+      summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+      likelyRelevantToRecentChanges: typeof parsed.likelyRelevantToRecentChanges === 'boolean' ? parsed.likelyRelevantToRecentChanges : false,
+      failures: Array.isArray(parsed.failures) ? parsed.failures : [],
+      needsRawLogs: typeof parsed.needsRawLogs === 'boolean' ? parsed.needsRawLogs : false
+    };
 
     // Validate verdict values
     if (!['pass', 'fail', 'uncertain'].includes(result.verdict)) {
       result.verdict = 'uncertain';
     }
+    if (typeof result.confidence !== 'number' || !Number.isFinite(result.confidence)) {
+      result.confidence = 0;
+    }
+    if (result.confidence < VERDICT_CONFIDENCE_FLOOR) {
+      result.verdict = 'uncertain';
+      result.needsRawLogs = true;
+      return attachLLMResultMetadata(result, {
+        ...completion,
+        metadata: {
+          ...completion.metadata,
+          llmAvailable: true,
+          fallbackReason: `Local verdict confidence ${result.confidence} was below ${VERDICT_CONFIDENCE_FLOOR}.`
+        }
+      });
+    }
 
-    return attachLLMUsage(result, completion.usage);
+    return attachLLMResultMetadata(result, completion);
   } catch (error: any) {
     // If the local model is offline, fails to respond, or output is unparseable
-    return {
+    const provider = resolveProvider(taskType);
+    return attachLLMMetadata({
       verdict: 'uncertain',
       confidence: 0.0,
       summary: `Failed to triage using local LLM: ${error.message || error}`,
       likelyRelevantToRecentChanges: false,
       failures: [],
       needsRawLogs: true,
-    };
+    }, fallbackMetadata(provider, error, Date.now() - start));
   }
 }
 
@@ -214,7 +358,7 @@ export interface CodeReviewIssue {
   suggestedFix: string | null;
 }
 
-export interface CodeReviewResponse {
+export interface CodeReviewResponse extends LLMResponseMetadata {
   hasIssues: boolean;
   issues: CodeReviewIssue[];
   summary: string;
@@ -252,28 +396,32 @@ Schema:
     userPrompt += `\n--- File: ${f.filename} ---\n${f.content}\n`;
   }
 
+  const start = Date.now();
   try {
-    const completion = await callChatCompletion(systemPrompt, userPrompt);
+    const completion = await callChatCompletion('review', systemPrompt, userPrompt);
     const jsonString = extractJSON(completion.content);
-    const parsed = JSON.parse(jsonString) as CodeReviewResponse;
-    if (typeof parsed.summary !== 'string') {
-      parsed.summary = '';
-    }
-    parsed.reviewAvailable = true;
-    return attachLLMUsage(parsed, completion.usage);
+    const parsed = JSON.parse(jsonString) as Partial<CodeReviewResponse>;
+    const result: CodeReviewResponse = {
+      hasIssues: typeof parsed.hasIssues === 'boolean' ? parsed.hasIssues : false,
+      issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+      summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+      reviewAvailable: true
+    };
+    return attachLLMResultMetadata(result, completion);
   } catch (error: any) {
     /* The local LLM is offline or returned unparseable output. Stay conservative: report no issues rather than a phantom warning, and flag that the review did not actually run. */
-    return {
+    const provider = resolveProvider('review');
+    return attachLLMMetadata({
       hasIssues: false,
       issues: [],
       summary: 'Code review did not run.',
       reviewAvailable: false,
       note: `Failed to review code using local LLM: ${error.message || error}`
-    };
+    }, fallbackMetadata(provider, error, Date.now() - start));
   }
 }
 
-export interface CommandDigestResponse {
+export interface CommandDigestResponse extends LLMResponseMetadata {
   summary: string;
   keyFindings: string[];
   digest: string;
@@ -309,30 +457,26 @@ Command(s) with exit codes: ${JSON.stringify(exitCodes)}
 Output:
 ${trimmedLogs}`;
 
+  const start = Date.now();
   try {
-    const completion = await callChatCompletion(systemPrompt, userPrompt);
+    const completion = await callChatCompletion('digest', systemPrompt, userPrompt);
     const parsed = JSON.parse(extractJSON(completion.content)) as CommandDigestResponse;
-    if (typeof parsed.summary !== 'string') {
-      parsed.summary = '';
-    }
-    if (!Array.isArray(parsed.keyFindings)) {
-      parsed.keyFindings = [];
-    }
-    if (typeof parsed.digest !== 'string') {
-      parsed.digest = '';
-    }
-    if (typeof parsed.needsRawLogs !== 'boolean') {
-      parsed.needsRawLogs = false;
-    }
-    return attachLLMUsage(parsed, completion.usage);
+    const result: CommandDigestResponse = {
+      summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+      keyFindings: Array.isArray(parsed.keyFindings) ? parsed.keyFindings : [],
+      digest: typeof parsed.digest === 'string' ? parsed.digest : '',
+      needsRawLogs: typeof parsed.needsRawLogs === 'boolean' ? parsed.needsRawLogs : false
+    };
+    return attachLLMResultMetadata(result, completion);
   } catch (error: any) {
     /* Local model offline or unparseable output: stay conservative and tell the caller to fall back to the raw log rather than inventing a digest. */
-    return {
+    const provider = resolveProvider('digest');
+    return attachLLMMetadata({
       summary: `Failed to digest command output using local LLM: ${error.message || error}`,
       keyFindings: [],
       digest: '',
       needsRawLogs: true,
-    };
+    }, fallbackMetadata(provider, error, Date.now() - start));
   }
 }
 
@@ -374,31 +518,36 @@ Schema:
     }
   }
 
+  const start = Date.now();
   try {
-    const completion = await callChatCompletion(systemPrompt, userPrompt);
+    const completion = await callChatCompletion('scout', systemPrompt, userPrompt);
     const parsed = JSON.parse(extractJSON(completion.content)) as ScoutResponse;
-    parsed.pointers = Array.isArray(parsed.pointers) ? parsed.pointers.filter(isValidPointer) : [];
-    if (!Array.isArray(parsed.suggestedNextSearches)) {
-      parsed.suggestedNextSearches = [];
+    const result: ScoutResponse = {
+      pointers: Array.isArray(parsed.pointers) ? parsed.pointers.filter(isValidPointer) : [],
+      suggestedNextSearches: Array.isArray(parsed.suggestedNextSearches) ? parsed.suggestedNextSearches : [],
+      summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+      needsDeeperLook: typeof parsed.needsDeeperLook === 'boolean' ? parsed.needsDeeperLook : false,
+      scoutAvailable: true
+    };
+    if (result.pointers.length === 0 || result.pointers.every((p) => p.confidence < SCOUT_POINTER_CONFIDENCE_FLOOR)) {
+      result.needsDeeperLook = true;
+      completion.metadata = {
+        ...completion.metadata,
+        fallbackReason: `No scout pointer met confidence ${SCOUT_POINTER_CONFIDENCE_FLOOR}.`
+      };
     }
-    if (typeof parsed.summary !== 'string') {
-      parsed.summary = '';
-    }
-    if (typeof parsed.needsDeeperLook !== 'boolean') {
-      parsed.needsDeeperLook = parsed.pointers.length === 0;
-    }
-    parsed.scoutAvailable = true;
-    return attachLLMUsage(parsed, completion.usage);
+    return attachLLMResultMetadata(result, completion);
   } catch (error: any) {
     /* Model offline or unparseable: stay conservative. Return no ranked pointers and flag that ranking did not run, so the caller falls back to the deterministic candidate list the server already gathered. */
-    return {
+    const provider = resolveProvider('scout');
+    return attachLLMMetadata({
       pointers: [],
       suggestedNextSearches: [],
       summary: 'Candidate ranking did not run.',
       needsDeeperLook: true,
       scoutAvailable: false,
       note: `Failed to rank candidates using local LLM: ${error.message || error}`
-    };
+    }, fallbackMetadata(provider, error, Date.now() - start));
   }
 }
 
@@ -427,27 +576,25 @@ Schema:
 Log (line-numbered):
 ${numberedLog}`;
 
+  const start = Date.now();
   try {
-    const completion = await callChatCompletion(systemPrompt, userPrompt);
+    const completion = await callChatCompletion('query', systemPrompt, userPrompt);
     const parsed = JSON.parse(extractJSON(completion.content)) as LogQueryResponse;
-    if (typeof parsed.answer !== 'string') {
-      parsed.answer = '';
-    }
-    if (typeof parsed.relevantExcerpt !== 'string') {
-      parsed.relevantExcerpt = '';
-    }
-    if (typeof parsed.lineRange !== 'string') {
-      parsed.lineRange = '';
-    }
-    parsed.available = true;
-    return attachLLMUsage(parsed, completion.usage);
+    const result: LogQueryResponse = {
+      answer: typeof parsed.answer === 'string' ? parsed.answer : '',
+      relevantExcerpt: typeof parsed.relevantExcerpt === 'string' ? parsed.relevantExcerpt : '',
+      lineRange: typeof parsed.lineRange === 'string' ? parsed.lineRange : '',
+      available: true
+    };
+    return attachLLMResultMetadata(result, completion);
   } catch (error: any) {
     /* Model offline or unparseable: signal unavailability so the caller can fall back to grep_log or a raw-log slice. */
-    return {
+    const provider = resolveProvider('query');
+    return attachLLMMetadata({
       answer: `Failed to query log using local LLM: ${error.message || error}`,
       relevantExcerpt: '',
       lineRange: '',
       available: false,
-    };
+    }, fallbackMetadata(provider, error, Date.now() - start));
   }
 }

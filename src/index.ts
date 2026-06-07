@@ -6,7 +6,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { detectCommands } from './detector';
 import { runSuite, trimLog, numberLines, getGitDiff, gatherCandidates } from './runner';
-import { queryLocalLLM, queryCodeReview, queryCommandDigest, queryLogQuestion, queryScout, getLLMUsage, attachLLMUsage, combineLLMUsage } from './llm';
+import { queryLocalLLM, queryCodeReview, queryCommandDigest, queryLogQuestion, queryScout, getLLMUsage, getLLMMetadata, attachLLMUsage, combineLLMUsage, checkLocalLLMHealth } from './llm';
 import { resolveLogPath, grepLog } from './registry';
 import { RunTestVerdictArgs, RunCommandDigestArgs, RunScoutArgs } from './types';
 import { buildAnalyticsRecord, inferWorkspaceFromLogPath, recordAnalytics } from './analytics';
@@ -36,6 +36,9 @@ function recordToolAnalytics(workspacePath: string, input: {
   llmInputText?: string;
   responseText: string;
   llmResult?: unknown;
+  llmMetadata?: ReturnType<typeof getLLMMetadata>;
+  confidence?: number;
+  avoidedRawOutput?: boolean;
   runId?: string;
   rawLogPath?: string;
   logPath?: string;
@@ -48,6 +51,9 @@ function recordToolAnalytics(workspacePath: string, input: {
     llmInputText: input.llmInputText,
     responseText: input.responseText,
     llmUsage: getLLMUsage(input.llmResult),
+    llmMetadata: input.llmMetadata || getLLMMetadata(input.llmResult),
+    confidence: input.confidence,
+    avoidedRawOutput: input.avoidedRawOutput,
     targetWorkspacePath: workspacePath,
     runId: input.runId,
     rawLogPath: input.rawLogPath,
@@ -60,6 +66,14 @@ function recordToolAnalytics(workspacePath: string, input: {
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
+      {
+        name: 'check_local_llm_health',
+        description: 'Checks the configured local OpenAI-compatible LLM endpoint with a tiny JSON-only request and returns provider/model availability metadata without exposing prompts, raw responses, or secrets.',
+        inputSchema: {
+          type: 'object',
+          properties: {}
+        }
+      },
       {
         name: 'run_test_verdict',
         description: 'Runs build/lint/tests in the workspace and triages results using a local LLM to output a compact verdict.',
@@ -281,6 +295,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
+  if (name === 'check_local_llm_health') {
+    try {
+      const health = await checkLocalLLMHealth();
+      const text = jsonText(health);
+      recordToolAnalytics(process.cwd(), {
+        toolName: 'check_local_llm_health',
+        rawSourceText: '',
+        responseText: text,
+        llmResult: health,
+        llmMetadata: health,
+        avoidedRawOutput: false
+      });
+      return {
+        content: [{ type: 'text', text }]
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: 'text', text: `Error executing check_local_llm_health: ${err.message || err}` }],
+        isError: true
+      };
+    }
+  }
+
   if (name === 'run_test_verdict') {
     const {
       workspacePath,
@@ -316,7 +353,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           toolName: 'run_test_verdict',
           rawSourceText: '',
           responseText: text,
-          commands: []
+          commands: [],
+          avoidedRawOutput: false
         });
         return {
           content: [
@@ -351,10 +389,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       );
 
       // Map local LLM verdict to overall result
-      // Keep safety: if any command returned non-zero code, verdict must be 'fail' (or 'uncertain' if LLM failed)
+      // Keep safety: command exit codes are authoritative and the local LLM cannot override them.
       let finalVerdict: 'pass' | 'fail' | 'uncertain' = triage.verdict;
-      if (absoluteFail && finalVerdict === 'pass') {
-        finalVerdict = 'fail'; // Override faulty LLM intuition
+      if (absoluteFail) {
+        finalVerdict = 'fail'; // Override faulty or unavailable LLM intuition
       } else if (!absoluteFail && finalVerdict === 'fail') {
         finalVerdict = 'pass'; // Override if everything exited with 0
       }
@@ -397,10 +435,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         confidence: triage.confidence,
         commandsRun: commandsToRun,
         summary: triage.summary,
-        failures: triage.failures,
+        failures: finalVerdict === 'pass' ? [] : triage.failures,
+        runId,
         rawLogPath: suiteResult.rawLogPath,
         needsRawLogs: triage.needsRawLogs,
-        likelyRelevantToRecentChanges: triage.likelyRelevantToRecentChanges
+        likelyRelevantToRecentChanges: triage.likelyRelevantToRecentChanges,
+        ...getLLMMetadata(triage)
       };
 
       if (triageResult) {
@@ -414,6 +454,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         llmInputText: suiteResult.trimmedLogContent,
         responseText: text,
         llmResult: triage,
+        confidence: triage.confidence,
+        avoidedRawOutput: true,
         runId,
         rawLogPath: suiteResult.rawLogPath,
         commands: commandsToRun,
@@ -467,7 +509,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         [],
         {},
         [],
-        trimmed
+        trimmed,
+        'triage'
       );
       const workspaceForAnalytics = inferWorkspaceFromLogPath(resolvedPath);
       const output = {
@@ -475,7 +518,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         confidence: triage.confidence,
         summary: triage.summary,
         failures: triage.failures,
-        needsRawLogs: triage.needsRawLogs
+        needsRawLogs: triage.needsRawLogs,
+        ...getLLMMetadata(triage)
       };
       const text = jsonText(output);
       recordToolAnalytics(workspaceForAnalytics, {
@@ -484,6 +528,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         llmInputText: trimmed,
         responseText: text,
         llmResult: triage,
+        confidence: triage.confidence,
+        avoidedRawOutput: true,
         logPath: path.relative(workspaceForAnalytics, resolvedPath)
       });
 
@@ -552,7 +598,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         recordToolAnalytics(workspacePath, {
           toolName: 'run_changed_files_review',
           rawSourceText: '',
-          responseText: text
+          responseText: text,
+          avoidedRawOutput: false
         });
         return {
           content: [
@@ -573,7 +620,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         rawSourceText,
         llmInputText: rawSourceText,
         responseText: text,
-        llmResult: review
+        llmResult: review,
+        avoidedRawOutput: true
       });
       return {
         content: [
@@ -610,7 +658,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           toolName: 'run_regression_check',
           rawSourceText: '',
           responseText: text,
-          commands: []
+          commands: [],
+          avoidedRawOutput: false
         });
         return {
           content: [
@@ -669,7 +718,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         runId,
         rawLogPath: suiteResult.rawLogPath,
         commands: commandsToRun,
-        exitCodes
+        exitCodes,
+        avoidedRawOutput: true
       });
 
       return {
@@ -733,7 +783,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         digest: digest.digest,
         runId,
         rawLogPath: suiteResult.rawLogPath,
-        needsRawLogs: digest.needsRawLogs
+        needsRawLogs: digest.needsRawLogs,
+        ...getLLMMetadata(digest)
       };
       const text = jsonText(output);
       recordToolAnalytics(workspacePath, {
@@ -742,6 +793,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         llmInputText: suiteResult.trimmedLogContent,
         responseText: text,
         llmResult: digest,
+        avoidedRawOutput: true,
         runId,
         rawLogPath: suiteResult.rawLogPath,
         commands: commandsToRun,
@@ -797,6 +849,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         llmInputText: bounded,
         responseText: text,
         llmResult: res,
+        avoidedRawOutput: true,
         runId,
         rawLogPath: path.relative(workspacePath, absLog)
       });
@@ -844,6 +897,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         toolName: 'grep_log',
         rawSourceText: logContent,
         responseText: text,
+        avoidedRawOutput: true,
         runId,
         rawLogPath: path.relative(workspacePath, absLog)
       });
@@ -877,7 +931,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           scoutAvailable: false
         };
         const text = jsonText(output);
-        recordToolAnalytics(workspacePath, { toolName: 'scout_codebase', rawSourceText: '', responseText: text });
+        recordToolAnalytics(workspacePath, { toolName: 'scout_codebase', rawSourceText: '', responseText: text, avoidedRawOutput: false });
         return { content: [{ type: 'text', text }] };
       }
 
@@ -898,7 +952,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           scoutAvailable: false
         };
         const text = jsonText(output);
-        recordToolAnalytics(workspacePath, { toolName: 'scout_codebase', rawSourceText: '', responseText: text });
+        recordToolAnalytics(workspacePath, { toolName: 'scout_codebase', rawSourceText: '', responseText: text, avoidedRawOutput: false });
         return { content: [{ type: 'text', text }] };
       }
 
@@ -918,6 +972,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         summary: scout.summary,
         needsDeeperLook: scout.needsDeeperLook,
         scoutAvailable: scout.scoutAvailable,
+        ...getLLMMetadata(scout),
         ...(scout.note ? { note: scout.note } : {})
       };
       const text = jsonText(output);
@@ -926,7 +981,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         rawSourceText,
         llmInputText: rawSourceText,
         responseText: text,
-        llmResult: scout
+        llmResult: scout,
+        avoidedRawOutput: true
       });
 
       return { content: [{ type: 'text', text }] };

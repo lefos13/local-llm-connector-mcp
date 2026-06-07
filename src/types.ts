@@ -4,19 +4,29 @@ export interface FailureDetail {
   suggestedFix: string | null;
 }
 
-export interface LogQueryResponse {
+export interface LLMResponseMetadata {
+  llmAvailable?: boolean;
+  llmProvider?: string;
+  llmModel?: string;
+  llmLatencyMs?: number;
+  llmTaskType?: string;
+  fallbackReason?: string;
+}
+
+export interface LogQueryResponse extends LLMResponseMetadata {
   answer: string;
   relevantExcerpt: string;
   lineRange: string;
   available?: boolean;
 }
 
-export interface VerdictResult {
+export interface VerdictResult extends LLMResponseMetadata {
   verdict: 'pass' | 'fail' | 'uncertain';
   confidence: number;
   commandsRun: string[];
   summary: string;
   failures: FailureDetail[];
+  runId?: string;
   rawLogPath: string;
   needsRawLogs?: boolean;
   likelyRelevantToRecentChanges?: boolean;
@@ -49,7 +59,7 @@ export interface ScoutPointer {
   confidence: number;
 }
 
-export interface ScoutResponse {
+export interface ScoutResponse extends LLMResponseMetadata {
   pointers: ScoutPointer[];
   suggestedNextSearches: string[];
   summary: string;
@@ -68,4 +78,3 @@ export interface RunScoutArgs {
   maxCandidates?: number;
   contextLines?: number;
 }
-

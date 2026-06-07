@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { estimateTokens } from './runner';
 import { LLMUsage } from './llm';
+import { LLMResponseMetadata } from './types';
 
 /* Records compact per-tool context accounting without storing prompts, raw logs, file contents, or full model responses. */
 export type MeasurementSource = 'api_usage' | 'estimated' | 'mixed';
@@ -23,6 +24,14 @@ export interface AnalyticsRecord {
   estimatedTokensSaved: number;
   savingsPercentage: number;
   measurementSource: MeasurementSource;
+  llmAvailable?: boolean;
+  llmProvider?: string;
+  llmModel?: string;
+  llmLatencyMs?: number;
+  llmTaskType?: string;
+  confidence?: number;
+  fallbackReason?: string;
+  avoidedRawOutput?: boolean;
 }
 
 interface AnalyticsSummary {
@@ -103,6 +112,9 @@ export function buildAnalyticsRecord(input: {
   llmInputText?: string;
   responseText: string;
   llmUsage?: LLMUsage;
+  llmMetadata?: LLMResponseMetadata;
+  confidence?: number;
+  avoidedRawOutput?: boolean;
   targetWorkspacePath?: string;
   runId?: string;
   rawLogPath?: string;
@@ -145,7 +157,15 @@ export function buildAnalyticsRecord(input: {
     returnedToMainTokens,
     estimatedTokensSaved,
     savingsPercentage,
-    measurementSource
+    measurementSource,
+    llmAvailable: input.llmMetadata?.llmAvailable,
+    llmProvider: input.llmMetadata?.llmProvider,
+    llmModel: input.llmMetadata?.llmModel,
+    llmLatencyMs: input.llmMetadata?.llmLatencyMs,
+    llmTaskType: input.llmMetadata?.llmTaskType,
+    confidence: input.confidence,
+    fallbackReason: input.llmMetadata?.fallbackReason,
+    avoidedRawOutput: input.avoidedRawOutput
   };
 }
 

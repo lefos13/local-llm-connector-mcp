@@ -11,7 +11,8 @@ It is designed for coding agents that need to verify changes without pasting raw
 - Stores full command logs under `.codex-local-test-runs/` in the target workspace.
 - Trims long logs before sending them to the local model, preserving the beginning, the end, and small windows around failure markers in the middle so the real error is not dropped.
 - Uses command exit codes as the source of truth for pass/fail classification.
-- Uses a local LLM to summarize failures, identify likely affected files, and suggest fixes.
+- Uses task-specific local LLM presets to summarize failures, identify likely affected files, and suggest fixes.
+- Reports local model availability, provider/model selection, latency, and fallback reasons on LLM-backed responses.
 - Reviews changed files under 500 KB before expensive validation runs.
 - Can compare current auto-detected validation behavior with a saved baseline.
 - Digests the output of any arbitrary noisy command (installs, builds, migrations, large searches, git history) into a compact, intent-focused summary.
@@ -20,6 +21,12 @@ It is designed for coding agents that need to verify changes without pasting raw
 - Stores private context-savings analytics under `.codex-local-test-runs/` so users can inspect local LLM token use, returned MCP response size, and estimated main-context savings without sending those analytics back to the main model.
 
 ## Exposed MCP Tools
+
+### `check_local_llm_health`
+
+Checks the configured local OpenAI-compatible endpoint with a tiny JSON-only request.
+
+Returns provider/model metadata, redacted API base, availability, latency, and a compact error summary when unavailable. It does not expose prompts, raw responses, or secrets.
 
 ### `run_test_verdict`
 
@@ -43,10 +50,13 @@ Returns a JSON verdict with:
 - `commandsRun`: commands executed by the server.
 - `summary`: compact result explanation.
 - `failures`: structured failure details and suggested fixes.
+- `runId`: stable handle for the stored log (the log filename without extension).
 - `rawLogPath`: path to the full log, relative to `workspacePath`.
 - `needsRawLogs`: whether the local model needs more log context.
 - `likelyRelevantToRecentChanges`: local model's estimate of whether a failure is connected to the reported `changedFiles`. Omitted when the model is unavailable.
 - `triage`: optional. When `autoTriage` is true and the verdict is `fail` or `uncertain`, contains the query results of the failed/uncertain log query.
+
+LLM-backed results may also include `llmAvailable`, `llmProvider`, `llmModel`, `llmLatencyMs`, `llmTaskType`, and `fallbackReason`. These fields are optional and additive.
 
 ### `run_failure_triage`
 
@@ -137,7 +147,7 @@ Returns `matches` (each with `lineRange` and a line-numbered `excerpt`), `totalM
 
 Recon subagent for the main model. Instead of scanning the whole tree yourself, hand off a navigation goal and let the local model point you at the few relevant code regions.
 
-The server first greps the workspace for the seed terms deterministically (using `ripgrep` when available, falling back to a portable Node walk that skips heavy directories like `node_modules`, `.git`, `dist`), groups hits by file, and builds numbered context windows around the densest matches. The local model then ranks those candidates into pointers; it only orders and explains what the grep already found and is instructed never to invent paths or line numbers.
+The server first greps the workspace for the seed terms deterministically (using `ripgrep` when available, falling back to a portable Node walk that skips heavy directories like `node_modules`, `.git`, `dist`), groups hits by file, and builds numbered context windows around the densest matches. The local model then ranks those candidates into pointers; it only orders and explains what the grep already found and is instructed never to invent paths or line numbers. If no pointer meets the confidence gate, `needsDeeperLook` is set.
 
 Inputs:
 
@@ -173,7 +183,7 @@ Every successful tool path records private analytics under the MCP server projec
 <local-tester-mcp>/.codex-local-test-runs/analytics-summary.json
 ```
 
-These files are for later user inspection and are not returned in MCP tool responses. Records keep the latest 200 tool calls and include compact metadata only: tool name, timestamp, target workspace path, `runId` or relative log path when available, commands and exit codes when applicable, token counts, estimated main-context tokens saved, savings percentage, and whether token usage came from the local LLM API or estimator fallback.
+These files are for later user inspection and are not returned in MCP tool responses. Records keep the latest 200 tool calls and include compact metadata only: tool name, timestamp, target workspace path, `runId` or relative log path when available, commands and exit codes when applicable, token counts, estimated main-context tokens saved, savings percentage, local provider/model, latency, availability, confidence, fallback reason, whether raw output was avoided, and whether token usage came from the local LLM API or estimator fallback.
 
 The server uses OpenAI-compatible `usage.prompt_tokens`, `usage.completion_tokens`, and `usage.total_tokens` when the local endpoint provides them. If usage is missing, it falls back to the same rough `~4 chars/token` estimator used for raw-log and MCP-response sizing. Analytics writes are best-effort and never fail the underlying tool call. Raw logs, prompts, file contents, and full model responses are not stored in analytics records.
 
@@ -239,6 +249,12 @@ The server reads these environment variables:
 
 - `LOCAL_LLM_API_URL`: base URL for the local OpenAI-compatible endpoint. Defaults to `http://localhost:8080/v1`.
 - `LOCAL_LLM_MODEL`: model name sent in chat completion requests. Defaults to `local-model`.
+- `LOCAL_LLM_VERDICT_MODEL`: optional model override for `run_test_verdict`.
+- `LOCAL_LLM_TRIAGE_MODEL`: optional model override for `run_failure_triage`.
+- `LOCAL_LLM_REVIEW_MODEL`: optional model override for `run_changed_files_review`.
+- `LOCAL_LLM_DIGEST_MODEL`: optional model override for `run_command_digest`.
+- `LOCAL_LLM_SCOUT_MODEL`: optional model override for `scout_codebase`.
+- `LOCAL_LLM_QUERY_MODEL`: optional model override for `query_log` and inline `autoTriage`.
 
 Example:
 
@@ -249,6 +265,8 @@ npm start
 ```
 
 If the local model is unavailable, returns invalid JSON, or cannot classify the result, the server reports an `uncertain` verdict or an advisory review issue instead of inventing confidence.
+
+All routing remains local-only. Task-specific model variables select a local model for that task; they do not enable remote fallback or hosted LLM calls.
 
 ## MCP Client Setup
 

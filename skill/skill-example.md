@@ -11,6 +11,7 @@ Use the `mcp__local_tester` tools as the first validation path after code change
 
 Currently implemented server tools:
 
+- `check_local_llm_health`: verifies the configured local OpenAI-compatible endpoint/model with a tiny JSON-only request and returns availability metadata.
 - `run_test_verdict`: runs build/lint/test/smoke commands in a workspace and returns a compact local-LLM verdict.
 - `run_failure_triage`: analyzes an existing log file and returns compact root-cause/fix guidance.
 - `run_changed_files_review`: reads changed files under 500 KB and asks the local LLM for likely issues before expensive validation.
@@ -24,16 +25,23 @@ Currently implemented server tools:
 
 1. Check local project instructions before validation, including `AGENTS.md` or `agents.md`.
 2. Identify the workspace path as an absolute path.
-3. If files changed and the tool is exposed, call `run_changed_files_review` before slow test suites when a lightweight local-LLM review can catch obvious issues.
-4. Prefer an explicit `testCommand` for `run_test_verdict` when the correct validation command is known from the repo, package scripts, or user request.
-5. Omit `testCommand` only when automatic command detection is preferable.
-6. Pass a short `taskSummary` that describes the concrete code change or validation goal, not a broad audit request.
-7. Pass `changedFiles` when available, using repo-relative paths for tools that resolve files under `workspacePath`.
-8. Treat returned JSON as the primary signal and avoid raw logs while the summary is actionable.
-9. When `verdict` is `fail` or `uncertain`, look at the `triage` field in the response (if `autoTriage: true` was passed) or call `run_failure_triage`, `query_log`, or `grep_log` on the returned `runId`/log before reading raw logs, unless the returned summary already contains enough detail to fix the issue.
-10. Use `run_regression_check` only when auto-detected commands are appropriate and updating `.codex-local-test-runs/baseline.json` is acceptable for the workspace.
+3. If local model availability is unclear, call `check_local_llm_health` before spending time on LLM-backed verdicts or scouting.
+4. If files changed and the tool is exposed, call `run_changed_files_review` before slow test suites when a lightweight local-LLM review can catch obvious issues.
+5. Prefer an explicit `testCommand` for `run_test_verdict` when the correct validation command is known from the repo, package scripts, or user request.
+6. Omit `testCommand` only when automatic command detection is preferable.
+7. Pass a short `taskSummary` that describes the concrete code change or validation goal, not a broad audit request.
+8. Pass `changedFiles` when available, using repo-relative paths for tools that resolve files under `workspacePath`.
+9. Treat returned JSON as the primary signal and avoid raw logs while the summary is actionable.
+10. When `verdict` is `fail` or `uncertain`, look at the `triage` field in the response (if `autoTriage: true` was passed) or call `run_failure_triage`, `query_log`, or `grep_log` on the returned `runId`/log before reading raw logs, unless the returned summary already contains enough detail to fix the issue.
+11. Use `run_regression_check` only when auto-detected commands are appropriate and updating `.codex-local-test-runs/baseline.json` is acceptable for the workspace.
 
 ## Tool Call Shapes
+
+Call `check_local_llm_health` when you need to confirm the local provider/model before LLM-backed workflows:
+
+```json
+{}
+```
 
 Call `run_changed_files_review` (set `useDiff` to review only changed hunks vs `HEAD`):
 
@@ -130,7 +138,8 @@ Use commands that exercise the changed surface:
 ## Interpreting Results
 
 - `run_changed_files_review`: Treat `hasIssues: true` as advisory. Verify serious findings with tests, typecheck, or direct code inspection before changing code. If `reviewAvailable` is `false`, the local model did not run; do not read `hasIssues: false` as a clean review. Check `skipped` to see whether any changed files were not reviewed (missing, not a file, or over the 500 KB limit).
-- `run_test_verdict`: When present, `likelyRelevantToRecentChanges` is the local model's guess about whether a failure stems from the reported `changedFiles`; use it to prioritize, not as proof. Set `maxOutputLines` to bound how much log the model sees on very noisy commands, `timeoutMs` for long suites, and `parallel: true` only when the detected commands are independent.
+- LLM-backed results can include `llmAvailable`, `llmProvider`, `llmModel`, `llmLatencyMs`, `llmTaskType`, and `fallbackReason`. If `llmAvailable` is `false`, treat the local model output as unavailable and fall back to deterministic command results, `grep_log`, or the smallest useful raw-log slice.
+- `run_test_verdict`: When present, `likelyRelevantToRecentChanges` is the local model's guess about whether a failure stems from the reported `changedFiles`; use it to prioritize, not as proof. Set `maxOutputLines` to bound how much log the model sees on very noisy commands, `timeoutMs` for long suites, and `parallel: true` only when the detected commands are independent. Low local-model confidence keeps the verdict uncertain and sets `needsRawLogs`.
 - Context-savings analytics are intentionally not returned in tool JSON. Inspect `.codex-local-test-runs/analytics.json` and `.codex-local-test-runs/analytics-summary.json` in the MCP server project, or run `npm run analytics:ui` there, when you need local LLM token use, returned MCP response size, estimated tokens saved, and savings percentages.
 - `run_changed_files_review`: Prefer `useDiff: true` in a git repo to review only changed hunks (cheaper, sharper); it falls back to whole-file content for files with no diff or outside git.
 - `run_test_verdict` `pass`: Report the commands run, the verdict, and any residual risk. Do not read or paste raw logs.
