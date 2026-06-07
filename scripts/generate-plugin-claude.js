@@ -67,7 +67,13 @@ try {
 
   /* Pin the runtime dep to the version this repo was built and tested against. */
   const sdkVersion = require(
-    path.join(rootDir, "node_modules", "@modelcontextprotocol", "sdk", "package.json"),
+    path.join(
+      rootDir,
+      "node_modules",
+      "@modelcontextprotocol",
+      "sdk",
+      "package.json",
+    ),
   ).version;
 
   const pluginJson = {
@@ -136,7 +142,9 @@ try {
   for (const file of SERVER_FILES) {
     const src = path.join(distDir, file);
     if (!fs.existsSync(src)) {
-      console.error(`Error: compiled server file missing: ${src}. Run \`npm run build\` first.`);
+      console.error(
+        `Error: compiled server file missing: ${src}. Run \`npm run build\` first.`,
+      );
       process.exit(1);
     }
     fs.copyFileSync(src, path.join(serverDir, file));
