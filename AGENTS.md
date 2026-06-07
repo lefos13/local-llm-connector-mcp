@@ -9,6 +9,7 @@ This repository contains the `local-tester-mcp` server used by the `local-test-v
 - Run `npm run build` after TypeScript changes.
 - Do not run `npm install` in the sandbox. Any dependency installation must be requested with network privileges.
 - If you change server behavior, tool names, input schemas, output shapes, environment variables, validation logic, command detection, log paths, setup requirements, or guardrails, update `README.md` and `skill/skill-example.md` in the same change.
+- If you change server functionality or skill instructions, bump the versions for every generated plugin package before regenerating assets. Update the version sources used by the Antigravity, Claude, and Codex generators, then run `npm run build:plugin` so the committed plugin outputs carry the new versions.
 - Run `npm run build:plugin` after TypeScript or skill documentation changes to regenerate the plugin assets. Do not modify files under `plugin/` manually as they are generated.
 - Do not modify generated test-run logs or baseline files unless the task explicitly requires it.
 
@@ -34,6 +35,11 @@ Notes for the Codex generator:
 - The server is launched via `${PLUGIN_ROOT}/server/start.sh`; the launcher installs the runtime dependency into `${PLUGIN_DATA}` on first run. Do not hardcode absolute repo paths in `.mcp.json`.
 - `node_modules` is not committed. The committed `plugin/codex/server/` carries only the compiled JS plus a minimal `package.json`.
 - Because `plugin/codex/` is committed, regenerate and commit it whenever server behavior or the skill changes.
+- **Bump `VERSION` in `scripts/generate-plugin-codex.js` for every change that touches `plugin/codex/` output — including changes that only edit `skill/skill-example.md`.** Codex installs plugins from cached marketplace copies and shows the manifest version, so a static version makes updates hard to verify and can leave users on stale cached content. After bumping, run `npm run build:plugin:codex` (or `npm run build:plugin`) and commit the regenerated `plugin/codex/` output together with the source change.
+
+Notes for the Antigravity generator:
+
+- `scripts/generate-plugin-antigravity.js` writes the Antigravity plugin manifest version. Bump that version whenever server functionality or skill instructions change, then run `npm run build:plugin:antigravity` (or `npm run build:plugin`) so local/generated Antigravity plugin output matches the source change.
 
 ## Repository Shape
 
