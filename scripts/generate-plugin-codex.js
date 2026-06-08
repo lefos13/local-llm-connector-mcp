@@ -46,7 +46,7 @@ try {
   fs.mkdirSync(skillsDir, { recursive: true });
   fs.mkdirSync(serverDir, { recursive: true });
 
-  const VERSION = "1.0.1";
+  const VERSION = "1.0.2";
 
   const sdkVersion = require(
     path.join(
@@ -116,7 +116,7 @@ try {
   );
 
   const mcpJson = {
-    mcpServers: {
+    mcp_servers: {
       local_tester: {
         command: "bash",
         args: ["${PLUGIN_ROOT}/server/start.sh"],
@@ -199,13 +199,13 @@ with raw logs.
 ## Contents
 
 - \`.codex-plugin/plugin.json\` - plugin manifest (\`local-tester\` v${VERSION}).
-- \`.mcp.json\` - registers the \`local_tester\` stdio server via the required \`mcpServers\` wrapper.
+- \`.mcp.json\` - registers the \`local_tester\` stdio server via Codex's documented \`mcp_servers\` wrapper.
 - \`server/\` - the compiled MCP server plus a launcher (\`start.sh\`) and a minimal \`package.json\`.
 - \`skills/${SKILL_NAME}/SKILL.md\` - usage guidance, copied from \`skill/skill-example.md\`.
 
 ## How the server runs
 
-\`.mcp.json\` uses the standard top-level \`mcpServers\` object and launches
+\`.mcp.json\` uses the documented top-level \`mcp_servers\` object and launches
 \`\${PLUGIN_ROOT}/server/start.sh\`. On first run the
 launcher installs \`@modelcontextprotocol/sdk\` into the persistent
 \`\${PLUGIN_DATA}\` directory, then starts the server. No absolute repo paths are
