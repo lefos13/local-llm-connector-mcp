@@ -46,7 +46,7 @@ try {
   fs.mkdirSync(skillsDir, { recursive: true });
   fs.mkdirSync(serverDir, { recursive: true });
 
-  const VERSION = "1.0.10";
+  const VERSION = "1.0.11";
 
   const sdkVersion = require(
     path.join(
@@ -119,31 +119,30 @@ try {
     JSON.stringify(marketplaceJson, null, 2) + "\n",
   );
 
-  /* Launch the bundled launcher through `bash -c` so the SHELL expands the
-     plugin-root variable at runtime. Codex spawns MCP servers from the
-     project working directory, not the plugin root, so a bare relative
-     command ("./server/start.sh") is never found and the server fails to
-     start (its tools then never appear in a thread). Passing a plain
-     "${PLUGIN_ROOT}/server/start.sh" arg is also fragile: Codex only
-     documents ${...} substitution for hook commands, and bash does not expand
-     env vars inside a literal argument. `bash -c` sidesteps both problems and
-     lets us probe every plugin-root variable name seen in the wild
-     (PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT per OpenAI's docs; CODEX_PLUGIN_ROOT
-     in published community plugins). Once any of them resolves, start.sh
-     re-derives its own root from BASH_SOURCE, so passing the correct path is
-     all that matters. */
-  /* Use the camelCase `mcpServers` wrapper key. OpenAI's runtime docs list a
+  /* Anchor the launcher at the plugin root via `cwd: "."`. Codex resolves a
+     plugin MCP server's `cwd` relative to the plugin root (proven by working
+     community plugins like task-scheduler and codex-rg-guard that ship
+     `cwd: "."` with relative commands). Critically, Codex does NOT inject
+     PLUGIN_ROOT/CODEX_PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT into MCP server processes
+     — those are only documented for hook commands — so a launcher that relies
+     solely on them expands to an empty root ("/server/start.sh"), the process
+     dies instantly, and no tools ever bind. The `bash -c` form lets the shell
+     expand the path at runtime; we still probe the plugin-root variables in
+     case a future Codex sets them, but the real workhorse is the `$PWD`
+     fallback, which equals the plugin root once `cwd: "."` is applied.
+
+     Use the camelCase `mcpServers` wrapper key. OpenAI's runtime docs list a
      snake_case `mcp_servers` form too, but the Codex app's marketplace parser
      only recognizes `mcpServers` — with snake_case the plugin page shows zero
-     MCP servers and the server is never launched. This matches the working
-     community plugins (e.g. session-orchestrator). */
+     MCP servers. */
   const launcher =
-    'exec bash "${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}}/server/start.sh"';
+    'exec bash "${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$PWD}}}/server/start.sh"';
   const mcpJson = {
     mcpServers: {
       local_tester: {
         command: "bash",
         args: ["-c", launcher],
+        cwd: ".",
         env: {
           LOCAL_LLM_API_URL: "http://localhost:8080/v1",
           LOCAL_LLM_MODEL: "local-model",

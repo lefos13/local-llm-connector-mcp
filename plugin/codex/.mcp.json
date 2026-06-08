@@ -4,8 +4,9 @@
       "command": "bash",
       "args": [
         "-c",
-        "exec bash \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}}/server/start.sh\""
+        "exec bash \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$PWD}}}/server/start.sh\""
       ],
+      "cwd": ".",
       "env": {
         "LOCAL_LLM_API_URL": "http://localhost:8080/v1",
         "LOCAL_LLM_MODEL": "local-model"
