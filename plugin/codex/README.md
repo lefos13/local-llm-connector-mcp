@@ -9,14 +9,15 @@ with raw logs.
 
 ## Contents
 
-- `.codex-plugin/plugin.json` - plugin manifest (`local-tester` v1.0.0).
-- `.mcp.json` - registers the `local_tester` stdio server.
+- `.codex-plugin/plugin.json` - plugin manifest (`local-tester` v1.0.1).
+- `.mcp.json` - registers the `local_tester` stdio server via the required `mcpServers` wrapper.
 - `server/` - the compiled MCP server plus a launcher (`start.sh`) and a minimal `package.json`.
 - `skills/local-llm-subagent/SKILL.md` - usage guidance, copied from `skill/skill-example.md`.
 
 ## How the server runs
 
-`.mcp.json` launches `${PLUGIN_ROOT}/server/start.sh`. On first run the
+`.mcp.json` uses the standard top-level `mcpServers` object and launches
+`${PLUGIN_ROOT}/server/start.sh`. On first run the
 launcher installs `@modelcontextprotocol/sdk` into the persistent
 `${PLUGIN_DATA}` directory, then starts the server. No absolute repo paths are
 baked in, so the plugin remains portable after Codex installs it into its cache.

@@ -336,7 +336,7 @@ This repository can generate the `local-tester` plugin for **three different cli
 | ----------- | ------------------------------ | ------------------ | -------------- | ------------------------------------------------------------------------ |
 | Antigravity | `npm run build:plugin:antigravity` | `plugin/antigravity/` | No (gitignored) | Self-contained: `plugin.json`, `mcp_config.json` (registers the bundled server), portable `server/`, `skills/`. |
 | Claude Code | `npm run build:plugin:claude`      | `plugin/claude/`      | Yes            | `.claude-plugin/` manifest, bundled portable MCP server, local marketplace. |
-| Codex       | `npm run build:plugin:codex`       | `plugin/codex/`       | Yes            | `.codex-plugin/` manifest, bundled portable MCP server, repo marketplace. |
+| Codex       | `npm run build:plugin:codex`       | `plugin/codex/`       | Yes            | `.codex-plugin/` manifest, `.mcp.json` with top-level `mcpServers`, bundled portable MCP server, repo marketplace. |
 
 Run all generators at once with `npm run build:plugin`.
 
