@@ -46,7 +46,7 @@ try {
   fs.mkdirSync(skillsDir, { recursive: true });
   fs.mkdirSync(serverDir, { recursive: true });
 
-  const VERSION = "1.0.5";
+  const VERSION = "1.0.6";
 
   const sdkVersion = require(
     path.join(
@@ -72,7 +72,8 @@ try {
     mcpServers: "./.mcp.json",
     interface: {
       displayName: "Local Tester",
-      shortDescription: "Run local validation and summarize logs with a local LLM.",
+      shortDescription:
+        "Run local validation and summarize logs with a local LLM.",
       longDescription:
         "Validate code changes, triage failures, review changed files, check regressions, digest noisy commands, and scout codebases without flooding the conversation with raw logs.",
       developerName: "Lefos13",
@@ -91,13 +92,13 @@ try {
   );
 
   const marketplaceJson = {
-    name: "local-tester-marketplace",
+    name: "Softaware-marketplace",
     interface: {
-      displayName: "Local Tester Marketplace",
+      displayName: "Softaware Marketplace",
     },
     plugins: [
       {
-        name: "local-tester",
+        name: "local-subagent",
         source: {
           source: "local",
           path: PLUGIN_SOURCE_PATH,

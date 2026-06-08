@@ -1,11 +1,11 @@
 {
-  "name": "local-tester-marketplace",
+  "name": "Softaware-marketplace",
   "interface": {
-    "displayName": "Local Tester Marketplace"
+    "displayName": "Softaware Marketplace"
   },
   "plugins": [
     {
-      "name": "local-tester",
+      "name": "local-subagent",
       "source": {
         "source": "local",
         "path": "./plugin/codex"
