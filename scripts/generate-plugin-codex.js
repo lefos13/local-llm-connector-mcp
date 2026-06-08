@@ -46,7 +46,7 @@ try {
   fs.mkdirSync(skillsDir, { recursive: true });
   fs.mkdirSync(serverDir, { recursive: true });
 
-  const VERSION = "1.0.7";
+  const VERSION = "1.0.8";
 
   const sdkVersion = require(
     path.join(
@@ -98,7 +98,10 @@ try {
     },
     plugins: [
       {
-        name: "local-subagent",
+        /* MUST equal the manifest name in .codex-plugin/plugin.json. Codex
+           resolves the plugin by this entry name, then opens the source path
+           and reads plugin.json; a name mismatch fails the install. */
+        name: "local-tester",
         source: {
           source: "local",
           path: PLUGIN_SOURCE_PATH,
