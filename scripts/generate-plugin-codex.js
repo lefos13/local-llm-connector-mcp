@@ -46,7 +46,7 @@ try {
   fs.mkdirSync(skillsDir, { recursive: true });
   fs.mkdirSync(serverDir, { recursive: true });
 
-  const VERSION = "1.0.3";
+  const VERSION = "1.0.4";
 
   const sdkVersion = require(
     path.join(
@@ -115,10 +115,18 @@ try {
     JSON.stringify(marketplaceJson, null, 2) + "\n",
   );
 
+  /* Launch the bundled launcher through bash with the path resolved from
+     ${PLUGIN_ROOT}. Codex spawns MCP servers from the project working
+     directory, not the plugin root, so a bare relative command like
+     "./server/start.sh" is never found and the server fails to start (its
+     tools then never appear in a thread). Codex exposes ${PLUGIN_ROOT} (and
+     sets CLAUDE_PLUGIN_ROOT for backward compatibility), and start.sh honors
+     either, so this stays portable across installs. */
   const mcpJson = {
     mcp_servers: {
       local_tester: {
-        command: "./server/start.sh",
+        command: "bash",
+        args: ["${PLUGIN_ROOT}/server/start.sh"],
         env: {
           LOCAL_LLM_API_URL: "http://localhost:8080/v1",
           LOCAL_LLM_MODEL: "local-model",
@@ -198,14 +206,17 @@ with raw logs.
 ## Contents
 
 - \`.codex-plugin/plugin.json\` - plugin manifest (\`local-tester\` v${VERSION}).
-- \`.mcp.json\` - registers the \`local_tester\` stdio server via Codex's documented \`mcp_servers\` wrapper.
+- \`.mcp.json\` - registers the \`local_tester\` stdio server via Codex's documented \`mcp_servers\` wrapper, launched as \`bash \${PLUGIN_ROOT}/server/start.sh\`.
 - \`server/\` - the compiled MCP server plus a launcher (\`start.sh\`) and a minimal \`package.json\`.
 - \`skills/${SKILL_NAME}/SKILL.md\` - usage guidance, copied from \`skill/skill-example.md\`.
 
 ## How the server runs
 
 \`.mcp.json\` uses the documented top-level \`mcp_servers\` object and launches
-\`./server/start.sh\` from the plugin root. On first run the launcher installs
+\`bash \${PLUGIN_ROOT}/server/start.sh\`. Codex spawns MCP servers from the
+project working directory, so the launcher path is resolved from
+\`\${PLUGIN_ROOT}\` (Codex also sets \`CLAUDE_PLUGIN_ROOT\` for backward
+compatibility) rather than a fragile relative path. On first run the launcher installs
 \`@modelcontextprotocol/sdk\` into the plugin data directory when Codex provides
 one, or into a local \`.data/\` fallback beside the plugin. No absolute repo paths
 are baked in, so the plugin remains portable after Codex installs it into its
