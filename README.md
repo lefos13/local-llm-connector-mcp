@@ -218,7 +218,7 @@ The dashboard separates MCP tool-call count from shell-command count and lists e
 - Node.js 20 or newer.
 - npm.
 - An MCP-compatible client that can launch stdio servers.
-- A local OpenAI-compatible chat completions endpoint.
+- An OpenRouter API key (`OPENROUTER_API_KEY`), **or** a local OpenAI-compatible chat completions endpoint — at least one must be configured.
 - Validation tools required by target workspaces, such as npm scripts, pytest, Cargo, or Go tooling.
 
 The local model endpoint must accept requests like:
@@ -255,9 +255,58 @@ For development, run the TypeScript compiler in watch mode:
 npm run dev
 ```
 
+## OpenRouter Configuration
+
+Set `OPENROUTER_API_KEY` to route all LLM calls through [OpenRouter](https://openrouter.ai) instead of a local endpoint. When the key is set it takes priority; the local LLM path is used only when the key is absent or when an OpenRouter call fails.
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `OPENROUTER_API_KEY` | Yes (to enable OpenRouter) | Enables OpenRouter mode. Absence falls back to local LLM. |
+| `OPENROUTER_MODEL` | No | Default model for all tasks. Falls back to `openai/gpt-4o-mini`. |
+| `OPENROUTER_VERDICT_MODEL` | No | Per-task override for `run_test_verdict` |
+| `OPENROUTER_TRIAGE_MODEL` | No | Per-task override for `run_failure_triage` |
+| `OPENROUTER_REVIEW_MODEL` | No | Per-task override for `run_changed_files_review` |
+| `OPENROUTER_DIGEST_MODEL` | No | Per-task override for `run_command_digest` |
+| `OPENROUTER_SCOUT_MODEL` | No | Per-task override for `scout_codebase` |
+| `OPENROUTER_QUERY_MODEL` | No | Per-task override for `query_log` and inline `autoTriage` |
+
+### JSON mode requirement
+
+All requests — both OpenRouter and local — send `response_format: { type: "json_object" }`. **The selected OpenRouter model must support JSON mode.** Models that do not support it will return an API error, which triggers an automatic retry against the local LLM (if configured) or surfaces as an error.
+
+Known-compatible models (non-exhaustive):
+- `openai/gpt-4o`
+- `openai/gpt-4o-mini` *(default)*
+- `anthropic/claude-3-5-sonnet`
+- `anthropic/claude-3-haiku`
+- `google/gemini-flash-1.5`
+
+Check the [OpenRouter models page](https://openrouter.ai/models) and filter by JSON mode support before choosing a model.
+
+### Setting the key in a plugin install
+
+The `env` block in each generated plugin config is pre-populated with empty-string placeholders for all OpenRouter variables. Edit the config at your install location and fill in `OPENROUTER_API_KEY` (and optionally `OPENROUTER_MODEL`):
+
+| Client | Config location |
+|---|---|
+| Claude Code | `~/.claude/plugins/cache/<plugin-name>/.mcp.json` |
+| Codex | Codex plugin installation directory, `.mcp.json` |
+| Antigravity | `~/.gemini/config/plugins/local-tester/mcp_config.json` |
+
+```json
+"env": {
+  "OPENROUTER_API_KEY": "sk-or-v1-...",
+  "OPENROUTER_MODEL": "openai/gpt-4o-mini"
+}
+```
+
+### `check_local_llm_health` when OpenRouter is configured
+
+When `OPENROUTER_API_KEY` is set, `check_local_llm_health` returns immediately with `skipped: true` and `available: true` without making a network call. The assumption is that a configured key is valid; live errors surface as `fallbackReason` on actual tool calls.
+
 ## Local LLM Configuration
 
-The server reads these environment variables:
+When `OPENROUTER_API_KEY` is not set, the server uses a local OpenAI-compatible endpoint. These environment variables configure that fallback path:
 
 - `LOCAL_LLM_API_URL`: base URL for the local OpenAI-compatible endpoint. Defaults to `http://localhost:8080/v1`.
 - `LOCAL_LLM_MODEL`: model name sent in chat completion requests. Defaults to `local-model`.
@@ -278,8 +327,6 @@ npm start
 
 If the local model is unavailable, returns invalid JSON, or cannot classify the result, the server reports an `uncertain` verdict or an advisory review issue instead of inventing confidence.
 
-All routing remains local-only. Task-specific model variables select a local model for that task; they do not enable remote fallback or hosted LLM calls.
-
 ## MCP Client Setup
 
 Build the server first, then configure your MCP client to launch `dist/index.js` with Node.
@@ -293,6 +340,8 @@ Example stdio configuration:
       "command": "node",
       "args": ["/absolute/path/to/local-tester-mcp/dist/index.js"],
       "env": {
+        "OPENROUTER_API_KEY": "",
+        "OPENROUTER_MODEL": "",
         "LOCAL_LLM_API_URL": "http://localhost:8080/v1",
         "LOCAL_LLM_MODEL": "local-model"
       }
