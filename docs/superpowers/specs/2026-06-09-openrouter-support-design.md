@@ -113,10 +113,45 @@ callWithFallback(taskType, system, user)
 
 ---
 
+## Plugin Config Placeholders
+
+Each generated plugin config ships with all OpenRouter env vars pre-populated as empty-string placeholders so users know exactly which keys to fill in after installing. The generator scripts (`scripts/generate-plugin-antigravity.js`, `scripts/generate-plugin-claude.js`, `scripts/generate-plugin-codex.js`) must emit the following `env` block shape in their respective `.mcp.json` / `mcp_config.json` outputs:
+
+```json
+"env": {
+  "OPENROUTER_API_KEY": "",
+  "OPENROUTER_MODEL": "",
+  "OPENROUTER_VERDICT_MODEL": "",
+  "OPENROUTER_TRIAGE_MODEL": "",
+  "OPENROUTER_REVIEW_MODEL": "",
+  "OPENROUTER_DIGEST_MODEL": "",
+  "OPENROUTER_SCOUT_MODEL": "",
+  "OPENROUTER_QUERY_MODEL": "",
+  "LOCAL_LLM_API_URL": "http://localhost:8080/v1",
+  "LOCAL_LLM_MODEL": "local-model"
+}
+```
+
+An empty string is treated as absent by the server (same as unset). Users fill in `OPENROUTER_API_KEY` and optionally `OPENROUTER_MODEL` at minimum; all other vars are optional overrides. The `LOCAL_LLM_API_URL` and `LOCAL_LLM_MODEL` entries remain populated as they are the fallback path.
+
+The install location of the config file varies per client:
+
+| Client | Config file in plugin output | Typical install location |
+|---|---|---|
+| Claude Code | `plugin/claude/.mcp.json` | `~/.claude/plugins/cache/<plugin-name>/` |
+| Codex | `plugin/codex/.mcp.json` | Codex plugin directory |
+| Antigravity | `plugin/antigravity/mcp_config.json` | `~/.gemini/config/plugins/<plugin-name>/` |
+
+---
+
 ## Documentation Changes
 
-- `README.md`: New **OpenRouter Configuration** section with the env var table, provider priority explanation, and the JSON-mode model requirement note.
-- `skill/skill-example.md`: Same env var table and JSON-mode warning added to the configuration section.
+- `README.md`: New **OpenRouter Configuration** section with:
+  - The full env var table and purpose of each variable.
+  - Provider priority explanation (OpenRouter → local LLM fallback).
+  - The JSON-mode model requirement note with the known-compatible model list.
+  - Instructions for where to edit the config file after install, per client.
+- `skill/skill-example.md`: Same env var table, JSON-mode warning, and per-client config location added to the configuration section.
 - Plugin version bumped in `scripts/generate-plugin-antigravity.js`, `scripts/generate-plugin-claude.js`, `scripts/generate-plugin-codex.js`.
 - `npm run build:plugin` regenerates `plugin/` after TypeScript build.
 
