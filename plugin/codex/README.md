@@ -9,7 +9,7 @@ with raw logs.
 
 ## Contents
 
-- `.codex-plugin/plugin.json` - plugin manifest (`local-tester` v1.0.11).
+- `.codex-plugin/plugin.json` - plugin manifest (`local-tester` v1.0.12).
 - `.mcp.json` - registers the `local_tester` stdio server via the `mcpServers` wrapper, launched via `bash -c` so the shell resolves the plugin root at runtime.
 - `server/` - the compiled MCP server plus a launcher (`start.sh`) and a minimal `package.json`.
 - `skills/local-llm-subagent/SKILL.md` - usage guidance, copied from `skill/skill-example.md`.
@@ -34,12 +34,13 @@ runs offline.
 
 ## LLM configuration
 
-A local OpenAI-compatible LLM endpoint is expected. Defaults:
-`LOCAL_LLM_API_URL=http://localhost:8080/v1`, `LOCAL_LLM_MODEL=local-model`.
-Optional per-task overrides: `LOCAL_LLM_VERDICT_MODEL`,
-`LOCAL_LLM_TRIAGE_MODEL`, `LOCAL_LLM_REVIEW_MODEL`,
-`LOCAL_LLM_DIGEST_MODEL`, `LOCAL_LLM_SCOUT_MODEL`,
-`LOCAL_LLM_QUERY_MODEL`.
+**OpenRouter (primary):** Set `OPENROUTER_API_KEY` in `.mcp.json`'s `env` block to route all LLM calls through [OpenRouter](https://openrouter.ai). `OPENROUTER_MODEL` sets the default model (falls back to `openai/gpt-4o-mini`). Per-task overrides: `OPENROUTER_VERDICT_MODEL`, `OPENROUTER_TRIAGE_MODEL`, `OPENROUTER_REVIEW_MODEL`, `OPENROUTER_DIGEST_MODEL`, `OPENROUTER_SCOUT_MODEL`, `OPENROUTER_QUERY_MODEL`.
+
+> **JSON mode requirement:** All requests send `response_format: { type: "json_object" }`. The chosen model must support JSON mode. Compatible models include `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3-5-sonnet`, `anthropic/claude-3-haiku`, and `google/gemini-flash-1.5`. Check the [OpenRouter models page](https://openrouter.ai/models) and filter by JSON mode support.
+
+**Local LLM (fallback):** When `OPENROUTER_API_KEY` is absent, the server uses a local OpenAI-compatible endpoint. Defaults: `LOCAL_LLM_API_URL=http://localhost:8080/v1`, `LOCAL_LLM_MODEL=local-model`. Per-task overrides: `LOCAL_LLM_VERDICT_MODEL`, `LOCAL_LLM_TRIAGE_MODEL`, `LOCAL_LLM_REVIEW_MODEL`, `LOCAL_LLM_DIGEST_MODEL`, `LOCAL_LLM_SCOUT_MODEL`, `LOCAL_LLM_QUERY_MODEL`.
+
+Edit `.mcp.json`'s `env` block in your Codex plugin installation to set your values.
 
 ## Install
 
