@@ -176,18 +176,14 @@ Every run executed by the server is appended to `.codex-local-test-runs/index.js
 
 ## Context Analytics
 
-Every successful tool path records private analytics **inside the target workspace**, alongside its raw run logs, registry, and baseline:
+Every successful tool path records private analytics inside the target workspace:
 
 ```text
 <workspacePath>/.codex-local-test-runs/analytics.json
 <workspacePath>/.codex-local-test-runs/analytics-summary.json
 ```
 
-Storing analytics in the workspace (rather than in the MCP server's own project directory) keeps them readable from the project they describe, portable across machines, and unaffected by where the server itself is installed or run from — including when it runs from inside a bundled Claude Code plugin, where the server's own directory is ephemeral.
-
-These files are for later user inspection and are not returned in MCP tool responses. Records keep the latest 200 tool calls per workspace and include compact metadata only: tool name, timestamp, target workspace path, `runId` or relative log path when available, commands and exit codes when applicable, token counts, estimated main-context tokens saved, savings percentage, local provider/model, latency, availability, confidence, fallback reason, whether raw output was avoided, and whether token usage came from the local LLM API or estimator fallback.
-
-The server uses OpenAI-compatible `usage.prompt_tokens`, `usage.completion_tokens`, and `usage.total_tokens` when the local endpoint provides them. If usage is missing, it falls back to the same rough `~4 chars/token` estimator used for raw-log and MCP-response sizing. Analytics writes are best-effort and never fail the underlying tool call. Raw logs, prompts, file contents, and full model responses are not stored in analytics records.
+Records keep the latest 200 tool calls per workspace and include compact metadata: tool name, timestamp, commands and exit codes, token counts, savings percentage, provider/model/latency, confidence, and fallback reason. Raw logs, prompts, file contents, and full model responses are never stored. Analytics writes are best-effort and never fail the underlying tool call.
 
 ### Multi-Workspace Analytics Dashboard
 
@@ -203,15 +199,7 @@ By default, the dashboard serves `http://127.0.0.1:8787`. To use a different por
 npm run analytics:ui -- --port 8787
 ```
 
-The command runs the compiled server from `dist/analytics-ui.js`. Because analytics now live inside each workspace, the dashboard is **workspace-aware**:
-
-- **Add workspaces**: paste an absolute path to any project that has run local-tester tools into the "Add workspace" box. The dashboard reads `<path>/.codex-local-test-runs/analytics.json` and `analytics-summary.json` for that workspace. Workspaces with no analytics yet are still listed (with a "no analytics yet" badge) so you can confirm the path before tool calls populate it.
-- **Persisted list**: registered workspaces are stored at `~/.local-tester-analytics/workspaces.json` (in your home directory, independent of any single project) so the list survives restarts and works no matter which project the dashboard is launched from. You can also seed the list from the command line with one or more `--workspace /absolute/path` flags (`--store` is accepted as an alias); on first run with no persisted or CLI-provided workspaces, the dashboard seeds itself with the current working directory.
-- **Cross-project view**: the "Viewing" selector switches between "All workspaces" (an aggregated summary and a single merged, newest-first event feed tagged with each event's source workspace) and any single registered workspace.
-- **Pagination**: the event feed is paginated (10/25/50/100 per page, default 25) with Prev/Next controls and a "Showing X-Y of Z" indicator, so long histories across many projects stay manageable.
-- **Remove workspaces**: each row in the Workspaces panel has a "Remove" button that drops it from the persisted list (it does not delete any analytics files).
-
-The dashboard separates MCP tool-call count from shell-command count and lists every command in an event with its exit code, so a single `run_test_verdict` or `run_command_digest` call can show multiple underlying commands.
+The dashboard is workspace-aware: add workspaces by pasting absolute project paths, switch between an aggregated "All workspaces" view or a single workspace, paginate the event feed, and remove workspaces from the list. Registered workspaces persist at `~/.local-tester-analytics/workspaces.json`. You can also seed workspaces on the command line with `--workspace /absolute/path`.
 
 ## Requirements
 
@@ -439,15 +427,7 @@ Run all generators at once with `npm run build:plugin`.
 
 ### Antigravity
 
-The Antigravity plugin is now self-contained and portable, like the Claude Code
-and Codex variants: it bundles the compiled `local_tester` MCP server under
-`plugin/antigravity/server/` and registers it itself via `mcp_config.json`, so
-you do **not** need to hand-edit a separate global MCP config to get the tools.
-Antigravity's plugin spec does not document a `${CLAUDE_PLUGIN_ROOT}`/`${PLUGIN_ROOT}`-style
-path variable for `mcp_config.json`, so the bundled launcher (`server/start.sh`)
-self-locates instead (`$(dirname "${BASH_SOURCE[0]}")`) and installs its single
-runtime dependency into a persistent `.data/` directory beside itself on first
-run — no absolute machine-specific paths are baked in.
+The plugin bundles the compiled MCP server and registers it via `mcp_config.json`. The launcher (`server/start.sh`) self-locates and installs its single runtime dependency into `.data/` on first run — no absolute paths are baked in.
 
 1. Build the server and generate the plugin:
 
@@ -456,61 +436,24 @@ run — no absolute machine-specific paths are baked in.
    npm run build:plugin:antigravity
    ```
 
-   This generates `plugin/antigravity/` (`plugin.json`, `mcp_config.json`, the
-   bundled `server/`, and `skills/local-llm-subagent/`), which is ignored by
-   git — Antigravity loads plugins from a local folder rather than a
-   git-based marketplace, so nothing needs to be committed for this flow.
-
-2. Locate the directory where your Antigravity client looks for plugins, e.g.:
-   - **Global** (macOS/Linux): `~/.gemini/config/plugins/`
-   - **Global** (Windows): `%USERPROFILE%\.gemini\config\plugins\`
-   - Some Antigravity CLI versions instead stage imported plugins under `~/.gemini/antigravity-cli/plugins/`.
-   - **Workspace-only**: `<workspace-root>/.agents/plugins/` (or `_agents/plugins/`).
-
-3. Copy (or symlink, so future regenerations need no re-copy) the generated
-   plugin into a folder named `local-tester` under that directory:
+2. Copy (or symlink) the generated plugin into Antigravity's plugins directory:
 
    ```bash
    mkdir -p ~/.gemini/config/plugins
    cp -R plugin/antigravity ~/.gemini/config/plugins/local-tester
    ```
 
-   The final directory structure on your system should look like:
+   Plugin directories vary by client version: `~/.gemini/config/plugins/` (global), `~/.gemini/antigravity-cli/plugins/`, or `<workspace>/.agents/plugins/`.
 
-   ```text
-   ~/.gemini/config/plugins/local-tester/
-   ├── plugin.json
-   ├── mcp_config.json
-   ├── server/
-   │   ├── start.sh
-   │   ├── package.json
-   │   └── *.js (compiled server)
-   └── skills/
-       └── local-llm-subagent/
-           └── SKILL.md
-   ```
+3. Restart Antigravity (or reload plugins) so it registers the `local_tester` server and loads the `local-llm-subagent` skill.
 
-4. Restart your Antigravity client (or reload plugins, if your version exposes
-   that action) so it discovers `plugin.json`, stages `mcp_config.json`
-   (registering the `local_tester` server — exposed as `mcp__local_tester__*`),
-   and loads the `local-llm-subagent` skill.
+**Requirements:** `node`, `npm`, and `bash` on `PATH`; network access on first run only. Override the LLM endpoint via `LOCAL_LLM_API_URL` / `LOCAL_LLM_MODEL` in the copied `mcp_config.json`.
 
-**Requirements on the target machine:** `node`, `npm`, and `bash` on `PATH`,
-plus network access the first time (to install the runtime dependency). After
-that the server runs offline. To point at a different local LLM endpoint or
-model, edit the `env` block in the copied `mcp_config.json` (`LOCAL_LLM_API_URL`,
-`LOCAL_LLM_MODEL`, and the per-task `LOCAL_LLM_*_MODEL` overrides described in
-[MCP Client Setup](#mcp-client-setup)).
-
-Re-running `npm run build:plugin:antigravity` regenerates `plugin/antigravity/`
-in place; re-copy (or re-symlink once) it into the plugins directory to pick up
-changes, then reload/restart Antigravity.
+To pick up changes, re-run `npm run build:plugin:antigravity` and re-copy (or re-symlink once) the folder, then reload Antigravity.
 
 ### Claude Code
 
-The Claude Code plugin is self-contained and portable: it bundles the compiled MCP server under `plugin/claude/server/` and launches it via `${CLAUDE_PLUGIN_ROOT}/server/start.sh`, so no absolute repo paths are baked in. On first run the launcher installs the single runtime dependency (`@modelcontextprotocol/sdk`) into the persistent `${CLAUDE_PLUGIN_DATA}` directory, then starts the server.
-
-The **repository itself is the marketplace**: the catalog lives at the repo root (`.claude-plugin/marketplace.json`) and lists the plugin via the relative source `./plugin/claude`. Both the catalog and the generated plugin under `plugin/claude/` are committed so the git-based install can copy them.
+The plugin bundles the compiled MCP server and launches it via `${CLAUDE_PLUGIN_ROOT}/server/start.sh`. The runtime dependency installs into `${CLAUDE_PLUGIN_DATA}` on first run. The repository is the marketplace: the catalog at `.claude-plugin/marketplace.json` and the plugin under `plugin/claude/` are both committed.
 
 1. Build the server and generate the plugin (also regenerates the repo-root marketplace catalog):
 
@@ -544,9 +487,7 @@ claude --plugin-dir ./plugin/claude
 
 ### Codex
 
-The Codex plugin is self-contained and portable: it bundles the compiled MCP server under `plugin/codex/server/` and launches `./server/start.sh` from the plugin root, so no absolute repo paths or argv-level environment substitution are required. On first run the launcher installs the single runtime dependency (`@modelcontextprotocol/sdk`) into Codex's plugin data directory when available, or into the plugin-local `.data/` fallback, then starts the server.
-
-The repository exposes a Codex marketplace at `.agents/plugins/marketplace.json`, which lists the plugin via the relative source `./plugin/codex`. Both the catalog and generated plugin are committed so Codex can install the plugin from the repository marketplace.
+The plugin bundles the compiled MCP server and launches `./server/start.sh` from the plugin root. The runtime dependency installs into `${PLUGIN_DATA}` or `.data/` fallback on first run. The repository marketplace is at `.agents/plugins/marketplace.json`; both the catalog and `plugin/codex/` are committed.
 
 1. Build the server and generate the plugin:
 
