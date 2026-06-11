@@ -271,13 +271,48 @@ Known-compatible models (non-exhaustive):
 
 Check the [OpenRouter models page](https://openrouter.ai/models) and filter by JSON mode support before choosing a model.
 
-### Setting the key in a plugin install
+### Recommended setup command
 
-The `env` block in each generated plugin config is pre-populated with empty-string placeholders for all OpenRouter variables. Edit the config at your install location and fill in `OPENROUTER_API_KEY` (and optionally `OPENROUTER_MODEL`).
+Use the repo-shipped config manager instead of editing plugin cache files:
+
+```sh
+npm run openrouter:config -- setup
+```
+
+It prompts for the API key and model once, then updates the stable user-owned
+config surfaces for the supported clients:
+
+- Claude Code: `~/.claude/settings.json`
+- Gemini CLI: `~/.gemini/config/mcp_config.json`
+- Antigravity staged plugin: `~/.gemini/config/plugins/local-tester/mcp_config.json` when present
+- Codex and other macOS GUI app launches: the current user `launchctl` environment
+
+Other commands:
+
+```sh
+npm run openrouter:config -- update
+npm run openrouter:config -- delete
+npm run openrouter:config -- status
+```
+
+### Setting the key in a stable config
+
+Generated plugins intentionally omit `OPENROUTER_*` placeholders from their
+bundled config. Blank plugin-scoped values override inherited host settings,
+which forces users to re-edit versioned cache directories after every update.
+
+Preferred order:
+- Use the client's stable user config when it can supply environment variables to plugin MCP processes.
+- Otherwise set `OPENROUTER_*` in the parent shell or app launch environment.
+- Only set `OPENROUTER_*` inside an installed plugin config when you explicitly want a plugin-scoped override.
 
 #### Claude Code
 
-The plugin is cached at a versioned path under `~/.claude/plugins/cache/`. Find the exact file with:
+The config manager writes `OPENROUTER_*` into `~/.claude/settings.json` under
+the top-level `env` object. The generated plugin uses Claude's `${VAR}`
+expansion so new plugin versions inherit those values automatically. If you
+intentionally want a plugin-scoped override, the plugin is cached at a
+versioned path under `~/.claude/plugins/cache/`. Find the exact file with:
 
 ```sh
 find ~/.claude/plugins/cache/local-tester-marketplace -name ".mcp.json"
@@ -289,23 +324,27 @@ This prints something like:
 ~/.claude/plugins/cache/local-tester-marketplace/local-tester/1.2.2/.mcp.json
 ```
 
-Open that file and fill in the `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` values inside the `env` block:
+Open that file and add the `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` values inside the `env` block:
 
 ```json
 "env": {
   "OPENROUTER_API_KEY": "sk-or-v1-...",
   "OPENROUTER_MODEL": "deepseek/deepseek-v3",
-  "OPENROUTER_VERDICT_MODEL": "",
-  "OPENROUTER_TRIAGE_MODEL": "",
-  ...
+  "OPENROUTER_VERDICT_MODEL": "optional-override",
+  "OPENROUTER_TRIAGE_MODEL": "optional-override"
 }
 ```
 
-> **After a plugin update:** Claude Code installs the new version into a fresh versioned directory, so the old config is not carried over. After updating, re-run the `find` command above to get the new path and add your key again. Alternatively, set `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` as shell environment variables before launching Claude Code so they are inherited by the MCP server process and you never need to re-edit the file.
+Plugin-scoped edits are not carried across plugin updates, which is why the stable host config or launch environment is the recommended setup.
 
 #### Codex
 
-Find the installed Codex plugin config, then edit its `.mcp.json` under `mcpServers.local_tester.env`.
+The config manager writes `OPENROUTER_*` into the current macOS GUI session
+with `launchctl setenv`. The generated plugin uses `env_vars` to forward those
+names into the bundled MCP server without storing the secret in the cached
+`.mcp.json`. If you intentionally want a plugin-scoped override, find the
+installed plugin config and edit its `.mcp.json` under
+`mcpServers.local_tester.env`.
 
 ```bash
 find ~/.codex/plugins -path '*local-tester*' -name '.mcp.json'
@@ -318,13 +357,7 @@ Add your OpenRouter values there:
   "LOCAL_LLM_API_URL": "http://localhost:8080/v1",
   "LOCAL_LLM_MODEL": "local-model",
   "OPENROUTER_API_KEY": "sk-or-v1-...",
-  "OPENROUTER_MODEL": "deepseek/deepseek-v3",
-  "OPENROUTER_VERDICT_MODEL": "",
-  "OPENROUTER_TRIAGE_MODEL": "",
-  "OPENROUTER_REVIEW_MODEL": "",
-  "OPENROUTER_DIGEST_MODEL": "",
-  "OPENROUTER_SCOUT_MODEL": "",
-  "OPENROUTER_QUERY_MODEL": ""
+  "OPENROUTER_MODEL": "deepseek/deepseek-v3"
 }
 ```
 
@@ -332,7 +365,11 @@ After editing the installed plugin config, restart Codex or start a new thread s
 
 #### Antigravity
 
-Edit `~/.gemini/config/plugins/local-tester/mcp_config.json` and fill in the `env` block under `mcpServers.local_tester`.
+The config manager writes `OPENROUTER_*` into
+`~/.gemini/config/mcp_config.json` and, when the staged plugin exists, into
+`~/.gemini/config/plugins/local-tester/mcp_config.json` too. If you
+intentionally want a plugin-scoped override, edit that staged plugin config
+directly under `mcpServers.local_tester.env`.
 
 ### `check_local_llm_health` when OpenRouter is configured
 
@@ -374,8 +411,6 @@ Example stdio configuration:
       "command": "node",
       "args": ["/absolute/path/to/local-tester-mcp/dist/index.js"],
       "env": {
-        "OPENROUTER_API_KEY": "",
-        "OPENROUTER_MODEL": "",
         "LOCAL_LLM_API_URL": "http://localhost:8080/v1",
         "LOCAL_LLM_MODEL": "local-model"
       }

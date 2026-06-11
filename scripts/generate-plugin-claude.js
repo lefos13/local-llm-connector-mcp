@@ -63,7 +63,7 @@ try {
   /* Bump this on every meaningful change. Claude only pulls plugin updates
      when the version changes; keeping it static pins installs to the commit
      they were first installed from and updates become silent no-ops. */
-  const VERSION = "1.2.3";
+  const VERSION = "1.2.6";
 
   /* Pin the runtime dep to the version this repo was built and tested against. */
   const sdkVersion = require(
@@ -120,21 +120,26 @@ try {
      skill are mcp__local_tester__*, so the server key must be local_tester.
      The launcher is referenced via ${CLAUDE_PLUGIN_ROOT} so the plugin is
      portable: it carries its own compiled server and resolves deps relative to
-     the install dir rather than an absolute repo path. */
+     the install dir rather than an absolute repo path.
+
+     Resolve OpenRouter variables from the host-managed environment instead of
+     hardcoding plugin-scoped values. Claude Code expands ${VAR} placeholders
+     from its settings or launch environment, so the secret stays in the
+     stable user config while fresh plugin caches keep the same behavior. */
   const mcpJson = {
     mcpServers: {
       local_tester: {
         command: "bash",
         args: ["${CLAUDE_PLUGIN_ROOT}/server/start.sh"],
         env: {
-          OPENROUTER_API_KEY: "",
-          OPENROUTER_MODEL: "",
-          OPENROUTER_VERDICT_MODEL: "",
-          OPENROUTER_TRIAGE_MODEL: "",
-          OPENROUTER_REVIEW_MODEL: "",
-          OPENROUTER_DIGEST_MODEL: "",
-          OPENROUTER_SCOUT_MODEL: "",
-          OPENROUTER_QUERY_MODEL: "",
+          OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}",
+          OPENROUTER_MODEL: "${OPENROUTER_MODEL:-}",
+          OPENROUTER_VERDICT_MODEL: "${OPENROUTER_VERDICT_MODEL:-}",
+          OPENROUTER_TRIAGE_MODEL: "${OPENROUTER_TRIAGE_MODEL:-}",
+          OPENROUTER_REVIEW_MODEL: "${OPENROUTER_REVIEW_MODEL:-}",
+          OPENROUTER_DIGEST_MODEL: "${OPENROUTER_DIGEST_MODEL:-}",
+          OPENROUTER_SCOUT_MODEL: "${OPENROUTER_SCOUT_MODEL:-}",
+          OPENROUTER_QUERY_MODEL: "${OPENROUTER_QUERY_MODEL:-}",
           LOCAL_LLM_API_URL: "http://localhost:8080/v1",
           LOCAL_LLM_MODEL: "local-model",
         },
@@ -239,13 +244,13 @@ automatically based on its description.
 
 ## LLM configuration
 
-**OpenRouter (primary):** Set \`OPENROUTER_API_KEY\` in the \`env\` block of \`.mcp.json\` to route all LLM calls through [OpenRouter](https://openrouter.ai). \`OPENROUTER_MODEL\` sets the default model (falls back to \`openai/gpt-4o-mini\`). Per-task overrides: \`OPENROUTER_VERDICT_MODEL\`, \`OPENROUTER_TRIAGE_MODEL\`, \`OPENROUTER_REVIEW_MODEL\`, \`OPENROUTER_DIGEST_MODEL\`, \`OPENROUTER_SCOUT_MODEL\`, \`OPENROUTER_QUERY_MODEL\`.
+**OpenRouter (primary):** Run \`npm run openrouter:config -- setup\` from the repository to write \`OPENROUTER_*\` into \`~/.claude/settings.json\`. The generated \`.mcp.json\` reads those values through Claude's variable expansion, so plugin cache updates do not require secret edits. \`OPENROUTER_MODEL\` sets the default model (falls back to \`openai/gpt-4o-mini\`). Per-task overrides: \`OPENROUTER_VERDICT_MODEL\`, \`OPENROUTER_TRIAGE_MODEL\`, \`OPENROUTER_REVIEW_MODEL\`, \`OPENROUTER_DIGEST_MODEL\`, \`OPENROUTER_SCOUT_MODEL\`, \`OPENROUTER_QUERY_MODEL\`.
 
 > **JSON mode requirement:** All requests send \`response_format: { type: "json_object" }\`. The chosen model must support JSON mode. Compatible models include \`openai/gpt-4o\`, \`openai/gpt-4o-mini\`, \`anthropic/claude-3-5-sonnet\`, \`anthropic/claude-3-haiku\`, and \`google/gemini-flash-1.5\`. Check the [OpenRouter models page](https://openrouter.ai/models) and filter by JSON mode support.
 
 **Local LLM (fallback):** When \`OPENROUTER_API_KEY\` is absent, the server uses a local OpenAI-compatible endpoint. Defaults: \`LOCAL_LLM_API_URL=http://localhost:8080/v1\`, \`LOCAL_LLM_MODEL=local-model\`. Per-task overrides: \`LOCAL_LLM_VERDICT_MODEL\`, \`LOCAL_LLM_TRIAGE_MODEL\`, \`LOCAL_LLM_REVIEW_MODEL\`, \`LOCAL_LLM_DIGEST_MODEL\`, \`LOCAL_LLM_SCOUT_MODEL\`, \`LOCAL_LLM_QUERY_MODEL\`.
 
-Edit the \`env\` block in \`~/.claude/plugins/cache/<plugin-name>/.mcp.json\` to set your values.
+Use \`npm run openrouter:config -- update\` to change those values later, \`npm run openrouter:config -- status\` to inspect them, and \`npm run openrouter:config -- delete\` to remove them from the managed settings file. Only replace the generated \`\\\${...}\` entries in the installed plugin's \`.mcp.json\` if you explicitly want plugin-scoped overrides.
 
 ## Install
 

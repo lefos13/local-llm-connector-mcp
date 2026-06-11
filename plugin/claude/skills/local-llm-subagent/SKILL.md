@@ -186,7 +186,7 @@ If a tool exists in the server but is not exposed in the current Codex session, 
 
 ## Guardrails
 
-**LLM provider:** Set `OPENROUTER_API_KEY` in the MCP server's `env` block to use OpenRouter as the primary provider. When absent, the server falls back to a local OpenAI-compatible endpoint (`LOCAL_LLM_API_URL`). If an OpenRouter call fails, the server automatically retries with the local endpoint and surfaces `fallbackReason` in the response. The chosen OpenRouter model must support `response_format: { type: "json_object" }` (JSON mode); models that do not support it will error and trigger the local fallback. Compatible models include `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3-5-sonnet`, `anthropic/claude-3-haiku`, and `google/gemini-flash-1.5`.
+**LLM provider:** Prefer the repo-shipped config manager (`npm run openrouter:config -- setup`) to install `OPENROUTER_*` into the stable client-owned config surfaces and the macOS GUI-session environment. Generated plugins intentionally omit blank `OPENROUTER_*` placeholders so inherited host values keep working after plugin reinstalls. When the key is absent, the server falls back to a local OpenAI-compatible endpoint (`LOCAL_LLM_API_URL`). If an OpenRouter call fails, the server automatically retries with the local endpoint and surfaces `fallbackReason` in the response. The chosen OpenRouter model must support `response_format: { type: "json_object" }` (JSON mode); models that do not support it will error and trigger the local fallback. Compatible models include `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3-5-sonnet`, `anthropic/claude-3-haiku`, and `google/gemini-flash-1.5`.
 
 **OpenRouter env vars:**
 - `OPENROUTER_API_KEY` — enables OpenRouter mode

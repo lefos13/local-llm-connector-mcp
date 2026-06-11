@@ -46,7 +46,7 @@ try {
   fs.mkdirSync(skillsDir, { recursive: true });
   fs.mkdirSync(serverDir, { recursive: true });
 
-  const VERSION = "1.2.3";
+  const VERSION = "1.2.6";
 
   const sdkVersion = require(
     path.join(
@@ -137,16 +137,27 @@ try {
      MCP servers. */
   const launcher =
     'exec bash "${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$PWD}}}/server/start.sh"';
-  /* Keep Codex's generated env block limited to local fallback defaults.
-     Empty OpenRouter placeholders override inherited values with blank
-     strings, so Codex users must add those keys manually in the installed
-     plugin copy when they actually want OpenRouter enabled. */
+  /* Keep Codex's generated env block limited to local fallback defaults, then
+     explicitly forward optional OpenRouter variables from the host
+     environment. Codex documents `env_vars` as the pass-through mechanism for
+     stdio MCP servers; using it avoids secrets in cached plugin files while
+     still letting a launcher session provide `OPENROUTER_*`. */
   const mcpJson = {
     mcpServers: {
       local_tester: {
         command: "bash",
         args: ["-c", launcher],
         cwd: ".",
+        env_vars: [
+          "OPENROUTER_API_KEY",
+          "OPENROUTER_MODEL",
+          "OPENROUTER_VERDICT_MODEL",
+          "OPENROUTER_TRIAGE_MODEL",
+          "OPENROUTER_REVIEW_MODEL",
+          "OPENROUTER_DIGEST_MODEL",
+          "OPENROUTER_SCOUT_MODEL",
+          "OPENROUTER_QUERY_MODEL",
+        ],
         env: {
           LOCAL_LLM_API_URL: "http://localhost:8080/v1",
           LOCAL_LLM_MODEL: "local-model",
@@ -295,16 +306,18 @@ runs offline.
 
 ## LLM configuration
 
-**OpenRouter (primary):** Set \`OPENROUTER_API_KEY\` in \`.mcp.json\`'s \`env\` block to route all LLM calls through [OpenRouter](https://openrouter.ai). \`OPENROUTER_MODEL\` sets the default model (falls back to \`openai/gpt-4o-mini\`). Per-task overrides: \`OPENROUTER_VERDICT_MODEL\`, \`OPENROUTER_TRIAGE_MODEL\`, \`OPENROUTER_REVIEW_MODEL\`, \`OPENROUTER_DIGEST_MODEL\`, \`OPENROUTER_SCOUT_MODEL\`, \`OPENROUTER_QUERY_MODEL\`.
+**OpenRouter (primary):** Run \`npm run openrouter:config -- setup\` from the repository. The config manager stores \`OPENROUTER_*\` in the macOS GUI session with \`launchctl\`, and the generated \`env_vars\` pass-through forwards those values into the bundled MCP server when Codex launches normally. \`OPENROUTER_MODEL\` sets the default model (falls back to \`openai/gpt-4o-mini\`). Per-task overrides: \`OPENROUTER_VERDICT_MODEL\`, \`OPENROUTER_TRIAGE_MODEL\`, \`OPENROUTER_REVIEW_MODEL\`, \`OPENROUTER_DIGEST_MODEL\`, \`OPENROUTER_SCOUT_MODEL\`, \`OPENROUTER_QUERY_MODEL\`.
 
 > **JSON mode requirement:** All requests send \`response_format: { type: "json_object" }\`. The chosen model must support JSON mode. Compatible models include \`openai/gpt-4o\`, \`openai/gpt-4o-mini\`, \`anthropic/claude-3-5-sonnet\`, \`anthropic/claude-3-haiku\`, and \`google/gemini-flash-1.5\`. Check the [OpenRouter models page](https://openrouter.ai/models) and filter by JSON mode support.
 
 **Local LLM (fallback):** When \`OPENROUTER_API_KEY\` is absent, the server uses a local OpenAI-compatible endpoint. Defaults: \`LOCAL_LLM_API_URL=http://localhost:8080/v1\`, \`LOCAL_LLM_MODEL=local-model\`. Per-task overrides: \`LOCAL_LLM_VERDICT_MODEL\`, \`LOCAL_LLM_TRIAGE_MODEL\`, \`LOCAL_LLM_REVIEW_MODEL\`, \`LOCAL_LLM_DIGEST_MODEL\`, \`LOCAL_LLM_SCOUT_MODEL\`, \`LOCAL_LLM_QUERY_MODEL\`.
 
-Codex ships this plugin with only the local fallback keys in \`.mcp.json\`.
-To enable OpenRouter, add the \`OPENROUTER_*\` keys yourself in the installed
-plugin copy's \`mcpServers.local_tester.env\` block so the secret only exists
-where Codex actually runs the plugin.
+Codex ships this plugin with only the local fallback keys in \`env\`, plus an
+\`env_vars\` allowlist that forwards host \`OPENROUTER_*\` variables at runtime.
+Use \`npm run openrouter:config -- update\` to change those values later,
+\`npm run openrouter:config -- status\` to inspect them, and
+\`npm run openrouter:config -- delete\` to remove them from the GUI-session
+environment. That keeps secrets out of cached plugin files.
 
 ## Install
 
