@@ -185,43 +185,6 @@ function loadWorkspaceAnalytics(workspacePath: string): WorkspaceLoadResult {
   }
 }
 
-/* Combines per-workspace summaries into one cross-project view. Token and call
-   counts sum directly; the average savings percentage is recomputed as a
-   call-weighted mean so workspaces with more recorded calls are not diluted by
-   workspaces with only a couple. */
-function combineSummaries(loaded: WorkspaceLoadResult[]): AnalyticsSummary {
-  const combined = emptySummary();
-  let savingsWeighted = 0;
-  let latestUpdatedAt = '';
-
-  for (const entry of loaded) {
-    if (!entry.available) continue;
-    const summary = entry.summary;
-    combined.totalCalls += summary.totalCalls;
-    combined.totalRawSourceTokens += summary.totalRawSourceTokens;
-    combined.totalLocalLlmTokens += summary.totalLocalLlmTokens;
-    combined.totalReturnedToMainTokens += summary.totalReturnedToMainTokens;
-    combined.totalEstimatedMainContextTokensSaved += summary.totalEstimatedMainContextTokensSaved;
-    savingsWeighted += summary.averageSavingsPercentage * summary.totalCalls;
-    for (const [tool, count] of Object.entries(summary.callsByTool || {})) {
-      combined.callsByTool[tool] = (combined.callsByTool[tool] || 0) + count;
-    }
-    for (const [prov, count] of Object.entries(summary.callsByProvider || {})) {
-      if (!combined.callsByProvider) combined.callsByProvider = {};
-      combined.callsByProvider[prov] = (combined.callsByProvider[prov] || 0) + count;
-    }
-    if (summary.updatedAt && summary.updatedAt > latestUpdatedAt) {
-      latestUpdatedAt = summary.updatedAt;
-    }
-  }
-
-  combined.averageSavingsPercentage = combined.totalCalls > 0
-    ? Number((savingsWeighted / combined.totalCalls).toFixed(4))
-    : 0;
-  combined.updatedAt = latestUpdatedAt;
-  return combined;
-}
-
 function clampPageSize(value: number): number {
   if (!Number.isFinite(value) || value <= 0) return DEFAULT_PAGE_SIZE;
   return Math.min(MAX_PAGE_SIZE, Math.floor(value));
@@ -272,9 +235,44 @@ function sendJson(res: http.ServerResponse, statusCode: number, payload: unknown
   send(res, statusCode, 'application/json; charset=utf-8', JSON.stringify(payload, null, 2));
 }
 
+/* Only tool calls with a meaningful raw context (over 1000 tokens) are
+   considered for analytical statistics. Small-context calls (e.g. simple
+   file reads that the model barely noticed) would dilute the signal. */
+const MIN_RAW_TOKENS_FOR_ANALYTICS = 1000;
+
+function meaningfulRecords(records: AnalyticsRecord[]): AnalyticsRecord[] {
+  return records.filter((r) => r.rawSourceTokens > MIN_RAW_TOKENS_FOR_ANALYTICS);
+}
+
+/* Computes a summary from a filtered record list directly (rather than relying
+   on the persisted summary which may include small-context calls). */
+function computeSummaryFromRecords(records: AnalyticsRecord[]): AnalyticsSummary {
+  const summary = emptySummary();
+  if (records.length === 0) return summary;
+
+  summary.updatedAt = records.reduce((latest, r) => r.timestamp > latest ? r.timestamp : latest, '');
+  summary.totalCalls = records.length;
+  let savingsTotal = 0;
+
+  for (const record of records) {
+    summary.callsByTool[record.toolName] = (summary.callsByTool[record.toolName] || 0) + 1;
+    const provider = record.llmProvider || 'none';
+    if (!summary.callsByProvider) summary.callsByProvider = {};
+    summary.callsByProvider[provider] = (summary.callsByProvider[provider] || 0) + 1;
+    summary.totalRawSourceTokens += record.rawSourceTokens;
+    summary.totalLocalLlmTokens += record.localLlmTotalTokens;
+    summary.totalReturnedToMainTokens += record.returnedToMainTokens;
+    summary.totalEstimatedMainContextTokensSaved += record.estimatedTokensSaved;
+    savingsTotal += record.savingsPercentage;
+  }
+
+  summary.averageSavingsPercentage = Number((savingsTotal / records.length).toFixed(4));
+  return summary;
+}
+
 /* Builds the cross-workspace analytics payload for a given scope ('all' or one
-   workspace path), sorted newest-first and paginated. Records are tagged with
-   their source workspace so the 'all' view can attribute each event. */
+   workspace path), sorted newest-first and paginated. Records with
+   rawSourceTokens <= 1000 are excluded from all statistics. */
 function buildAnalyticsResponse(
   registered: string[],
   scope: string,
@@ -288,7 +286,7 @@ function buildAnalyticsResponse(
   const merged: AnalyticsRecord[] = [];
   for (const entry of targets) {
     if (!entry.available) continue;
-    for (const record of entry.records) {
+    for (const record of meaningfulRecords(entry.records)) {
       merged.push(scope === 'all' ? { ...record, sourceWorkspace: entry.path } : record);
     }
   }
@@ -300,9 +298,12 @@ function buildAnalyticsResponse(
   const start = (safePage - 1) * pageSize;
   const pageRecords = merged.slice(start, start + pageSize);
 
-  const summary = scope === 'all'
-    ? combineSummaries(loaded)
-    : (targets[0] ? targets[0].summary : emptySummary());
+  /* Recompute summaries from filtered records instead of using the persisted
+     summaries (which include small-context calls). */
+  const allMeaningful = scope === 'all'
+    ? loaded.flatMap((entry) => entry.available ? meaningfulRecords(entry.records) : [])
+    : merged;
+  const summary = computeSummaryFromRecords(allMeaningful);
 
   return {
     scope,
@@ -310,8 +311,8 @@ function buildAnalyticsResponse(
       path: entry.path,
       available: entry.available,
       error: entry.error,
-      recordCount: entry.records.length,
-      summary: entry.summary
+      recordCount: meaningfulRecords(entry.records).length,
+      summary: computeSummaryFromRecords(entry.available ? meaningfulRecords(entry.records) : [])
     })),
     summary,
     page: safePage,
@@ -741,15 +742,20 @@ function renderHtml(): string {
     <div class="notice" id="notice"></div>
 
     <section class="panel" aria-label="Registered workspaces">
-      <div class="panel-head">
+      <div class="panel-head" id="wsToggle" style="cursor:pointer;user-select:none">
         <h2 style="margin-bottom:0">Workspaces</h2>
-        <span class="meta" id="workspaceCount"></span>
+        <span style="display:flex;align-items:center;gap:12px">
+          <span class="meta" id="workspaceCount"></span>
+          <span id="wsChevron" style="font-size:12px;color:var(--muted)">▼</span>
+        </span>
       </div>
-      <form class="add-row" id="addForm">
-        <input type="text" id="addInput" placeholder="/absolute/path/to/workspace" autocomplete="off">
-        <button type="submit" class="primary">Add workspace</button>
-      </form>
-      <div class="workspace-list" id="workspaceList" style="margin-top:12px"></div>
+      <div id="wsBody">
+        <form class="add-row" id="addForm">
+          <input type="text" id="addInput" placeholder="/absolute/path/to/workspace" autocomplete="off">
+          <button type="submit" class="primary">Add workspace</button>
+        </form>
+        <div class="workspace-list" id="workspaceList" style="margin-top:12px"></div>
+      </div>
     </section>
 
     <div class="scope-row">
@@ -1226,6 +1232,15 @@ function renderHtml(): string {
     });
     document.getElementById('refresh').addEventListener('click', () => {
       load().catch((error) => showNotice('Failed to load analytics: ' + error.message));
+    });
+
+    /* Workspace section collapse toggle */
+    const wsBody = document.getElementById('wsBody');
+    const wsChevron = document.getElementById('wsChevron');
+    document.getElementById('wsToggle').addEventListener('click', () => {
+      const collapsed = wsBody.style.display === 'none';
+      wsBody.style.display = collapsed ? '' : 'none';
+      wsChevron.textContent = collapsed ? '▼' : '▶';
     });
 
     load().catch((error) => {
